@@ -1,0 +1,25 @@
+{
+  "name": "@albumphoto/core",
+  "version": "0.1.0",
+  "description": "Format d'album interopérable et logique IA (pure TypeScript, sans dépendance native)",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src",
+    "schema"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "~5.9.0",
+    "vitest": "^4.1.0"
+  }
+}

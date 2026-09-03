@@ -1,0 +1,18 @@
+{
+  "name": "albumphoto",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Créateur d'album photo assisté par IA locale — format d'album interopérable (mobile aujourd'hui, web et desktop demain)",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "npm run test --workspace=@albumphoto/core",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

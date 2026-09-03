@@ -1,0 +1,39 @@
+{
+  "name": "@albumphoto/mobile",
+  "version": "0.1.0",
+  "main": "index.ts",
+  "dependencies": {
+    "@albumphoto/core": "*",
+    "@react-native-ml-kit/face-detection": "^2.0.1",
+    "@react-native-ml-kit/image-labeling": "^2.0.0",
+    "expo": "~57.0.19",
+    "expo-build-properties": "~57.0.16",
+    "expo-file-system": "~57.0.6",
+    "expo-image": "~57.0.4",
+    "expo-image-manipulator": "~57.0.15",
+    "expo-media-library": "~57.0.4",
+    "expo-status-bar": "~57.0.1",
+    "jpeg-js": "^0.4.4",
+    "onnxruntime-react-native": "^1.24.3",
+    "react": "19.2.3",
+    "react-native": "0.86.3",
+    "react-native-executorch": "^0.9.3",
+    "react-native-gesture-handler": "~2.32.0",
+    "react-native-reanimated": "^4.5.1",
+    "react-native-safe-area-context": "~5.7.0",
+    "react-native-worklets": "^0.10.1"
+  },
+  "devDependencies": {
+    "@types/react": "~19.2.2",
+    "typescript": "~6.0.3"
+  },
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "private": true,
+  "description": "Application mobile AlbumPhoto (Expo) : éditeur d'album et assistant IA locale"
+}

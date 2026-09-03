@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://albumphoto.dev/schema/album-v1.json",
+  "title": "AlbumPhoto album manifest (album.json), format version 1",
+  "type": "object",
+  "required": ["format", "formatVersion", "id", "title", "page", "templates", "photos", "pages"],
+  "additionalProperties": true,
+  "properties": {
+    "format": { "const": "albumphoto" },
+    "formatVersion": { "type": "integer", "minimum": 1 },
+    "id": { "type": "string", "minLength": 1 },
+    "title": { "type": "string" },
+    "locale": { "type": "string", "default": "fr-FR" },
+    "createdAt": { "type": "string", "format": "date-time" },
+    "updatedAt": { "type": "string", "format": "date-time" },
+    "generator": { "type": "string" },
+    "page": {
+      "type": "object",
+      "required": ["width", "height", "unit"],
+      "properties": {
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "unit": { "enum": ["mm", "in", "px"] },
+        "bleed": { "type": "number", "minimum": 0 }
+      }
+    },
+    "theme": {
+      "type": "object",
+      "properties": {
+        "background": { "type": "string" },
+        "fontFamily": { "type": "string" },
+        "textColor": { "type": "string" },
+        "gutter": { "type": "number", "minimum": 0, "maximum": 0.5 }
+      }
+    },
+    "templates": { "type": "array", "items": { "$ref": "#/$defs/template" } },
+    "photos": { "type": "array", "items": { "$ref": "#/$defs/photo" } },
+    "people": { "type": "array", "items": { "$ref": "#/$defs/person" } },
+    "pages": { "type": "array", "items": { "$ref": "#/$defs/page" } },
+    "ai": {
+      "type": "object",
+      "properties": {
+        "captionStyle": { "enum": ["funny", "formal", "poetic", "minimal", "family"] },
+        "captionModel": { "type": "string" },
+        "selectedPeople": { "type": "array", "items": { "type": "string" } },
+        "generatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "$defs": {
+    "normRect": {
+      "type": "object",
+      "required": ["x", "y", "w", "h"],
+      "properties": {
+        "x": { "type": "number", "minimum": 0, "maximum": 1 },
+        "y": { "type": "number", "minimum": 0, "maximum": 1 },
+        "w": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 },
+        "h": { "type": "number", "exclusiveMinimum": 0, "maximum": 1 }
+      }
+    },
+    "template": {
+      "type": "object",
+      "required": ["id", "name", "slots"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "photoCount": { "type": "integer", "minimum": 0 },
+        "slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["id", "kind", "rect"],
+            "properties": {
+              "id": { "type": "string" },
+              "kind": { "enum": ["photo", "text"] },
+              "rect": { "$ref": "#/$defs/normRect" },
+              "align": { "enum": ["left", "center", "right"] }
+            }
+          }
+        }
+      }
+    },
+    "photo": {
+      "type": "object",
+      "required": ["id", "src", "width", "height"],
+      "properties": {
+        "id": { "type": "string" },
+        "src": { "type": "string", "pattern": "^(?!/)(?!.*\\.\\.).+$" },
+        "thumb": { "type": "string" },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 },
+        "mimeType": { "type": "string" },
+        "takenAt": { "type": "string" },
+        "location": {
+          "type": "object",
+          "required": ["latitude", "longitude"],
+          "properties": { "latitude": { "type": "number" }, "longitude": { "type": "number" } }
+        },
+        "sourceUri": { "type": "string" },
+        "hash": { "type": "string" },
+        "people": { "type": "array", "items": { "type": "string" } },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "labels": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "person": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "referencePhotoId": { "type": "string" },
+        "referenceFaceRect": { "$ref": "#/$defs/normRect" }
+      }
+    },
+    "transform": {
+      "type": "object",
+      "properties": {
+        "scale": { "type": "number", "minimum": 1, "default": 1 },
+        "offsetX": { "type": "number", "minimum": -1, "maximum": 1, "default": 0 },
+        "offsetY": { "type": "number", "minimum": -1, "maximum": 1, "default": 0 },
+        "rotation": { "type": "number", "default": 0 }
+      }
+    },
+    "page": {
+      "type": "object",
+      "required": ["id", "templateId"],
+      "properties": {
+        "id": { "type": "string" },
+        "templateId": { "type": "string" },
+        "background": { "type": "string" },
+        "photos": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["photoId"],
+            "properties": {
+              "photoId": { "type": "string" },
+              "transform": { "$ref": "#/$defs/transform" }
+            }
+          }
+        },
+        "texts": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": ["text"],
+            "properties": {
+              "text": { "type": "string" },
+              "role": { "enum": ["caption", "title", "subtitle", "body"] }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,13 @@
+node_modules/
+dist/
+coverage/
+.expo/
+.expo-shared/
+*.log
+.DS_Store
+# Native projects are generated with `npx expo prebuild`
+apps/mobile/android/
+apps/mobile/ios/
+# Large on-device model weights are downloaded at build time (see apps/mobile/README.md)
+apps/mobile/assets/models/*.onnx
+apps/mobile/assets/models/*.pte

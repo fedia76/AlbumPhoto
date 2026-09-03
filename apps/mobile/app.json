@@ -1,0 +1,49 @@
+{
+  "expo": {
+    "name": "AlbumPhoto",
+    "slug": "albumphoto",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "albumphoto",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "dev.albumphoto.mobile",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "AlbumPhoto parcourt vos photos sur l'appareil pour composer votre album. Aucune photo n'est envoyée sur Internet."
+      }
+    },
+    "android": {
+      "package": "dev.albumphoto.mobile",
+      "adaptiveIcon": {
+        "backgroundColor": "#E6F4FE",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "AlbumPhoto parcourt vos photos sur l'appareil pour composer votre album. Aucune photo n'est envoyée sur Internet.",
+          "savePhotosPermission": "AlbumPhoto enregistre les pages exportées dans votre galerie.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": { "minSdkVersion": 26 },
+          "ios": { "deploymentTarget": "16.0" }
+        }
+      ]
+    ]
+  }
+}

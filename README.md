@@ -1,0 +1,72 @@
+# AlbumPhoto
+
+Application de création d'album photo assistée par une **IA 100 % locale**.
+Version mobile aujourd'hui (Expo / React Native) ; les versions web et desktop
+viendront s'appuyer sur le **même format d'album** et le **même cœur TypeScript**.
+
+```
+albumphoto/
+├── packages/core/     @albumphoto/core — format d'album + logique IA, TypeScript pur, testé
+│   ├── src/album/     types, validation, sérialisation, géométrie (règle de rendu), gabarits
+│   ├── src/ai/        qualité d'image, hash perceptuel, regroupement de visages, scoring,
+│   │                  sélection, légendes (prompt LLM + gabarits), assemblage, pipeline
+│   ├── schema/        album.schema.json (JSON Schema 2020-12)
+│   └── test/          suite vitest (pipeline de bout en bout inclus)
+├── apps/mobile/       application Expo (éditeur + assistant IA) — adaptateurs natifs
+└── docs/album-format.md   spécification du format, référence pour web et desktop
+```
+
+## Fonctionnalités
+
+**Création (volontairement basique)**
+- Choix d'un gabarit de page parmi 11 mises en page (couverture, 1 à 4 photos, avec ou sans légende, chapitre).
+- Placement de photos depuis la galerie de l'appareil, textes (titre, légendes).
+- Recadrage par glisser, zoom par pincement, changement de gabarit sans perdre les photos.
+- Sauvegarde automatique dans un bundle `<id>.album/` (voir le format).
+
+**Assistant IA locale** (aucune donnée ne quitte l'appareil)
+1. **Parcours** des photos de l'appareil (les N plus récentes).
+2. **Détection des visages** (Google ML Kit, sur l'appareil) puis **regroupement par personne**
+   (embeddings + clustering agglomératif ; modèle ONNX optionnel, repli sans modèle).
+3. **Choix des personnes** par l'utilisateur, avec prénoms.
+4. **Scoring** des photos : netteté (variance du laplacien), exposition, contraste, couleurs,
+   présence des personnes choisies, yeux ouverts, sourires, composition ; déduplication des
+   rafales (dHash) et limitation par « moment ».
+5. **Légendes** dans le style choisi — drôle, formel, poétique, minimaliste, famille — par un
+   **LLM local** (react-native-executorch, Qwen 3 0.6B quantisé) avec repli sur un générateur
+   par gabarits, déterministe et instantané.
+6. **Assemblage** de l'album : couverture, chapitres par événement (écart temporel), rythme de
+   pages 1 / 2 / 3 / 4 photos selon l'orientation, légendes dans les zones texte.
+
+## Démarrer
+
+Prérequis : Node 20+, et pour l'app mobile un environnement Expo (Android Studio / Xcode).
+Les modules natifs (ML Kit, ONNX Runtime, ExecuTorch) imposent un **development build**
+(pas Expo Go).
+
+```bash
+npm install
+npm test                 # tests du cœur
+npm run typecheck        # types du cœur et de l'app
+
+cd apps/mobile
+npx expo prebuild        # génère android/ et ios/
+npx expo run:android     # ou npx expo run:ios
+```
+
+Voir [`apps/mobile/README.md`](apps/mobile/README.md) pour les modèles d'IA et les réglages.
+
+## Le format d'album
+
+Spécifié dans [`docs/album-format.md`](docs/album-format.md) : un dossier `*.album/` avec un
+manifeste `album.json` (JSON), des gabarits **embarqués**, des coordonnées **normalisées** et une
+règle de rendu unique (`computeCropRect`) pour que mobile, web et desktop affichent exactement
+la même page. La validation et la géométrie de référence sont dans `@albumphoto/core`, qui ne
+dépend d'aucune API native et pourra être publié pour les autres clients.
+
+## Feuille de route
+
+- Web / desktop : réutiliser `@albumphoto/core` avec un renderer Canvas/SVG et un export PDF.
+- Éditeur : rotation, fonds et polices, réordonnancement des pages par glisser-déposer.
+- IA : modèle d'embedding de visage packagé, légendes multimodales (modèle vision-langage local),
+  géocodage inverse hors ligne pour les lieux.
