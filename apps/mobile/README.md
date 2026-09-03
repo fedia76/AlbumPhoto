@@ -108,6 +108,25 @@ src/services/                 adaptateurs natifs des « ports » définis dans @
   du modèle (`src/services/captioner.ts`). Sans lui, tout téléchargement échoue et
   l'application se rabat silencieusement sur les gabarits.
 
+#### Pourquoi une génération peut sembler figée
+
+Rien, côté natif, ne borne la longueur d'une réponse : un petit modèle qui part en boucle
+écrit jusqu'à saturer sa fenêtre de contexte, soit plusieurs minutes pour une seule légende.
+`LocalLlmCaptionGenerator` surveille donc chaque génération et l'interrompt (`interrupt()`)
+dès que la première ligne est complète, après 15 s sans le moindre jeton, ou au bout de 40 s.
+Si le moteur natif ne rend toujours pas la main, la légende part au gabarit et le reste de
+l'album aussi — plutôt que d'attendre indéfiniment. Le cœur ajoute un garde-fou indépendant
+(`generateCaptions({ timeoutMs })`, 75 s) pour tout générateur qui se bloquerait.
+
+Ce qui aide à diagnostiquer, dans « Diagnostic » :
+
+- une ligne de journal par légende : durée, jetons d'entrée et générés, caractères reçus,
+  et le motif d'une coupure éventuelle ;
+- le bilan de l'album (légendes par le modèle, par gabarits, moyenne par légende) ;
+- pendant l'écriture, l'assistant affiche la photo **en cours** (et non la dernière terminée),
+  avec les caractères produits et les secondes écoulées : un compteur qui avance signifie que
+  le modèle travaille, un compteur figé qu'il est bloqué.
+
 ### Confidentialité
 
 Les photos, visages et légendes ne quittent jamais l'appareil. Les albums ne stockent aucun

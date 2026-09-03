@@ -48,6 +48,31 @@ export function buildCaptionPrompt(req: CaptionRequest): { system: string; user:
   return { system, user };
 }
 
+/** Retire les blocs de réflexion des modèles « thinking » (Qwen 3, etc.). */
+export function stripThinking(text: string): string {
+  // Un bloc encore ouvert est retiré lui aussi : pendant une génération en
+  // cours, tout ce qui suit `<think>` peut n'être que de la réflexion.
+  return text.replace(/<think>[\s\S]*?<\/think>/g, '').replace(/<think>[\s\S]*$/g, '').trim();
+}
+
+/** Une légende passé ce multiple de sa longueur cible : le modèle digresse. */
+const LENGTH_BUDGET = 6;
+/** Caractères bruts tolérés, blocs de réflexion compris, avant de couper. */
+const RAW_BUDGET = 3_000;
+
+/**
+ * Le modèle en a-t-il assez écrit ? Une légende tient sur une ligne : dès que
+ * la première est complète, la suite n'est que digression et coûte de longues
+ * secondes sur un téléphone. `raw` peut être partiel (génération en cours).
+ */
+export function hasEnoughText(raw: string, maxLength = DEFAULT_CAPTION_MAX_LENGTH): boolean {
+  if (raw.length >= RAW_BUDGET) return true;
+  const visible = stripThinking(raw);
+  if (visible.length >= maxLength * LENGTH_BUDGET) return true;
+  const newline = visible.indexOf('\n');
+  return newline > 0 && visible.slice(0, newline).trim().length >= 3;
+}
+
 /** Nettoie la sortie d'un LLM : guillemets, préfixes, coupures propres. */
 export function sanitizeCaption(raw: string, maxLength = DEFAULT_CAPTION_MAX_LENGTH): string {
   let s = raw.trim();

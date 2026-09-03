@@ -8,6 +8,7 @@ import { scorePhotos, type PhotoScore, type ScoringWeights } from './scoring';
 import { groupIntoEvents, selectPhotos, type PhotoEvent, type RejectedPhoto, type SelectedPhoto } from './selection';
 import type { CaptionGenerator, CaptionContext } from './captions/types';
 import { timeOfDayFromIso } from './captions/context';
+import { TemplateCaptionGenerator } from './captions/templateGenerator';
 import { buildAlbum, eventsToBuildInput } from './builder';
 
 /* ----------------------------- Ports (adapters) ---------------------------- */
@@ -60,6 +61,14 @@ export interface Progress {
   done: number;
   total: number;
   message?: string;
+  /**
+   * Élément en cours (1 pour le premier), émis *avant* de le traiter. Sans lui,
+   * une étape lente est indiscernable d'une étape bloquée : la progression ne
+   * bouge qu'une fois l'élément terminé.
+   */
+  current?: number;
+  /** Durée de l'élément qui vient de se terminer, en millisecondes. */
+  elapsedMs?: number;
 }
 
 export type ProgressCallback = (p: Progress) => void;
@@ -156,6 +165,26 @@ export function selectBestPhotos(
   return { selected, rejected, events, byPhoto, scores };
 }
 
+/** Issue d'une légende, pour le journal de diagnostic. */
+export interface CaptionDiagnostic {
+  /** Rang de la photo dans l'album, à partir de 1. */
+  index: number;
+  total: number;
+  photoId: string;
+  /** Durée de l'appel au générateur, en millisecondes. */
+  elapsedMs: number;
+  outcome:
+    | 'ok'
+    /** Le générateur a répondu une chaîne vide : la page restera sans texte. */
+    | 'empty'
+    | 'error'
+    /** Le générateur n'a pas répondu dans le délai imparti. */
+    | 'timeout'
+    /** Trop de blocages : les photos suivantes passent aux gabarits. */
+    | 'abandoned';
+  error?: unknown;
+}
+
 export interface CaptionParams {
   style: CaptionStyle;
   locale: string;
@@ -165,6 +194,20 @@ export interface CaptionParams {
   selectedPeople: Set<string>;
   onProgress?: ProgressCallback;
   signal?: AbortSignal;
+  /**
+   * Délai maximal accordé à une légende, en millisecondes (0 ou absent : sans
+   * limite). Un générateur qui ne rend jamais la main — un LLM sur appareil qui
+   * se bloque, par exemple — figerait sinon l'assistant sans aucun message.
+   */
+  timeoutMs?: number;
+  /**
+   * Nombre de blocages tolérés avant de renoncer au générateur pour le reste de
+   * l'album. Au-delà, les légendes restantes viennent des gabarits, sans
+   * attendre à nouveau le délai à chaque photo. Par défaut : 2.
+   */
+  maxTimeouts?: number;
+  /** Appelé pour chaque photo, avec le détail de ce qui s'est passé. */
+  onDiagnostic?: (d: CaptionDiagnostic) => void;
 }
 
 export function captionContextFor(
@@ -196,6 +239,39 @@ export function captionContextFor(
   return ctx;
 }
 
+/** Erreur d'un générateur de légendes qui a dépassé son délai. */
+class CaptionTimeout extends Error {
+  constructor(readonly ms: number) {
+    super(`Le générateur de légendes n'a pas répondu en ${Math.round(ms / 1000)} s.`);
+    this.name = 'CaptionTimeout';
+  }
+}
+
+/**
+ * Attend `promise` au plus `ms` millisecondes. La promesse abandonnée continue
+ * de vivre : c'est au générateur, prévenu par `onTimeout`, d'arrêter son
+ * travail (un LLM sur appareil s'interrompt, par exemple).
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => void): Promise<T> {
+  if (!ms || ms <= 0) return promise;
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      reject(new CaptionTimeout(ms));
+    }, ms);
+    promise.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
+
 /** Étape 4 : légendes dans le style choisi. */
 export async function generateCaptions(
   generator: CaptionGenerator,
@@ -205,20 +281,59 @@ export async function generateCaptions(
 ): Promise<Map<string, string>> {
   const captions = new Map<string, string>();
   const total = events.reduce((n, e) => n + e.photos.length, 0);
+  const maxTimeouts = params.maxTimeouts ?? 2;
   let done = 0;
+  let timeouts = 0;
+  /** Passe à `false` quand le générateur a trop tardé : on ne l'attend plus. */
+  let generatorAlive = true;
+  /** Secours instantané : mieux vaut une légende de gabarit qu'une page nue. */
+  const fallback = new TemplateCaptionGenerator();
   for (const event of events) {
     for (const sel of event.photos) {
       if (params.signal?.aborted) return captions;
+      const photoId = sel.analysis.photo.id;
       const context = captionContextFor(sel, byPhoto, params, event.title);
-      try {
-        // `variant` fait tourner les tournures d'une photo à l'autre.
-        const text = await generator.generate({ context, style: params.style, variant: done }, params.signal);
-        if (text) captions.set(sel.analysis.photo.id, text);
-      } catch {
-        // Légende manquante : la page restera sans texte.
+      // La photo en cours est annoncée avant d'être traitée : sinon un blocage
+      // ressemble à s'y méprendre à une étape terminée.
+      params.onProgress?.({ stage: 'caption', done, total, current: done + 1, message: photoId });
+      const startedAt = Date.now();
+      let outcome: CaptionDiagnostic['outcome'] = 'ok';
+      let failure: unknown;
+      if (!generatorAlive) {
+        outcome = 'abandoned';
+        captions.set(photoId, await fallback.generate({ context, style: params.style, variant: done }));
+      } else {
+        // Le délai prévient aussi le générateur : `abort` lui donne l'occasion
+        // d'interrompre proprement une génération partie trop loin.
+        const timer = new AbortController();
+        const relay = () => timer.abort();
+        params.signal?.addEventListener('abort', relay);
+        try {
+          // `variant` fait tourner les tournures d'une photo à l'autre.
+          const call = generator.generate({ context, style: params.style, variant: done }, timer.signal);
+          const text = await withTimeout(call, params.timeoutMs ?? 0, relay);
+          if (text) captions.set(photoId, text);
+          else outcome = 'empty';
+        } catch (e) {
+          failure = e;
+          if (e instanceof CaptionTimeout) {
+            outcome = 'timeout';
+            timeouts++;
+            captions.set(photoId, await fallback.generate({ context, style: params.style, variant: done }));
+            // Inutile de perdre le même délai sur chaque photo restante.
+            if (timeouts >= maxTimeouts) generatorAlive = false;
+          } else {
+            // Légende manquante : la page restera sans texte.
+            outcome = 'error';
+          }
+        } finally {
+          params.signal?.removeEventListener('abort', relay);
+        }
       }
       done++;
-      params.onProgress?.({ stage: 'caption', done, total });
+      const elapsedMs = Date.now() - startedAt;
+      params.onDiagnostic?.({ index: done, total, photoId, elapsedMs, outcome, ...(failure === undefined ? {} : { error: failure }) });
+      params.onProgress?.({ stage: 'caption', done, total, elapsedMs });
     }
   }
   return captions;

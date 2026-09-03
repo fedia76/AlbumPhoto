@@ -11,6 +11,7 @@ import {
   selectBestPhotos,
   serializeAlbum,
   validateAlbum,
+  type CaptionDiagnostic,
   type DetectedFace,
   type PipelineAdapters,
   type SourcePhoto,
@@ -138,6 +139,80 @@ describe('end-to-end pipeline (fake adapters)', () => {
     expect(placed.length).toBe(selected.length);
     const captionTexts = reparsed.pages.flatMap((p) => Object.values(p.texts)).filter((t) => t.role === 'caption');
     expect(captionTexts.length).toBeGreaterThan(0);
+  });
+
+  /**
+   * Un générateur qui se bloque : c'est le symptôme observé avec le LLM local
+   * (l'assistant restait figé sur une photo, sans message ni journal).
+   */
+  it('does not hang on a stuck caption generator', async () => {
+    const g = fakeGallery();
+    const a = adapters(g);
+    const analyses = await scanPhotos(a);
+    const clusters = detectPeople(analyses, { threshold: 0.8 });
+    const selectedPeople = new Set([clusters[0]!.id]);
+    const { selected, events, byPhoto } = selectBestPhotos(analyses, clusters, { selectedPeople, targetCount: 6, locale: 'fr-FR' });
+
+    const template = new TemplateCaptionGenerator();
+    let calls = 0;
+    const aborts: boolean[] = [];
+    const stuck = {
+      name: 'stuck',
+      generate: (req: Parameters<typeof template.generate>[0], signal?: AbortSignal) => {
+        // Les deux premières photos répondent, les suivantes ne rendent jamais
+        // la main — jusqu'à ce que le pipeline renonce au générateur.
+        if (++calls > 2) {
+          return new Promise<string>(() => {
+            signal?.addEventListener('abort', () => aborts.push(true));
+          });
+        }
+        return template.generate(req);
+      },
+    };
+
+    const diagnostics: CaptionDiagnostic[] = [];
+    const started: number[] = [];
+    const captions = await generateCaptions(stuck, events, byPhoto, {
+      style: 'family',
+      locale: 'fr-FR',
+      albumTitle: 'Vacances',
+      personNames: new Map([[clusters[0]!.id, 'Léa']]),
+      selectedPeople,
+      timeoutMs: 30,
+      onDiagnostic: (d) => diagnostics.push(d),
+      onProgress: (p) => {
+        if (p.current) started.push(p.current);
+      },
+    });
+
+    // Toutes les photos ont une légende : les gabarits prennent le relais.
+    expect(captions.size).toBe(selected.length);
+    expect(diagnostics.map((d) => d.outcome)).toEqual(['ok', 'ok', 'timeout', 'timeout', ...Array(selected.length - 4).fill('abandoned')]);
+    // Le générateur bloqué est prévenu, puis plus jamais appelé.
+    expect(aborts).toHaveLength(2);
+    expect(calls).toBe(4);
+    // La photo en cours est annoncée avant d'être traitée, blocage compris.
+    expect(started).toEqual(Array.from({ length: selected.length }, (_, i) => i + 1));
+  });
+
+  it('reports which photo is being captioned before generating it', async () => {
+    const g = fakeGallery();
+    const a = adapters(g);
+    const analyses = await scanPhotos(a);
+    const clusters = detectPeople(analyses, { threshold: 0.8 });
+    const selectedPeople = new Set([clusters[0]!.id]);
+    const { events, byPhoto } = selectBestPhotos(analyses, clusters, { selectedPeople, targetCount: 3, locale: 'fr-FR' });
+    const events1 = [{ ...events[0]!, photos: events[0]!.photos.slice(0, 1) }];
+    const seen: string[] = [];
+    await generateCaptions(a.captions, events1, byPhoto, {
+      style: 'family',
+      locale: 'fr-FR',
+      albumTitle: 'Vacances',
+      personNames: new Map(),
+      selectedPeople,
+      onProgress: (p) => seen.push(`${p.done}/${p.total}${p.current ? ` en cours:${p.current}` : ''}`),
+    });
+    expect(seen).toEqual(['0/1 en cours:1', '1/1']);
   });
 
   it('honours the scan limit and abort signal', async () => {
