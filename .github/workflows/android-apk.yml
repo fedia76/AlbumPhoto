@@ -31,6 +31,8 @@ jobs:
     env:
       EXPO_NO_TELEMETRY: '1'
       CI: '1'
+      # Le contexte `secrets` n'est pas autorisé dans les conditions `if` : on passe par env.
+      HAS_KEYSTORE: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -66,7 +68,7 @@ jobs:
           chmod +x gradlew
 
       - name: Signature personnalisée (si secrets présents)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        if: env.HAS_KEYSTORE == 'true'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
