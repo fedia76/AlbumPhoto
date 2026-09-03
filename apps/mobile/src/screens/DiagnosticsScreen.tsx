@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNavigation } from '../navigation';
-import { clearLog, readLog } from '../diagnostics/log';
+import { clearLog, readLog, readLogTail } from '../diagnostics/log';
 import { environmentSummary, runProbes } from '../diagnostics/probe';
 import { Button, Header } from '../components/ui';
 import { colors, radius, spacing } from '../theme';
@@ -13,8 +13,9 @@ export function DiagnosticsScreen() {
   const [refreshKey, setRefreshKey] = useState(0);
   const probes = useMemo(() => runProbes(), [refreshKey]);
   const environment = useMemo(() => environmentSummary(), []);
-  const logText = useMemo(() => readLog(), [refreshKey]);
+  const logView = useMemo(() => readLogTail(), [refreshKey]);
 
+  /** Le rapport partagé contient le journal entier, pas seulement l'extrait. */
   const report = [
     'AlbumPhoto — rapport de diagnostic',
     '',
@@ -23,12 +24,27 @@ export function DiagnosticsScreen() {
     ...probes.map((p) => `${p.ok ? 'OK  ' : 'ÉCHEC'} ${p.name} — ${p.detail}`),
     '',
     '--- Journal ---',
-    logText || '(vide)',
+    readLog() || '(vide)',
   ].join('\n');
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <Header title="Diagnostic" left={<Button title="Retour" variant="ghost" onPress={nav.back} />} />
+
+      <View style={styles.actions}>
+        <Button title="Partager" onPress={() => void Share.share({ message: report.slice(0, 60000) })} style={styles.action} />
+        <Button title="Actualiser" variant="secondary" onPress={() => setRefreshKey((k) => k + 1)} style={styles.action} />
+        <Button
+          title="Vider"
+          variant="danger"
+          onPress={() => {
+            clearLog();
+            setRefreshKey((k) => k + 1);
+          }}
+          style={styles.action}
+        />
+      </View>
+
       <ScrollView contentContainerStyle={styles.content}>
         <Text style={styles.lead}>
           Cet écran remplace les journaux système, inaccessibles sans ordinateur. Partagez le rapport pour signaler un
@@ -57,23 +73,15 @@ export function DiagnosticsScreen() {
           ))}
         </View>
 
-        <Text style={styles.section}>Journal</Text>
+        <Text style={styles.section}>
+          Journal {logView.totalChars > 0 ? `(${Math.round(logView.totalChars / 1024)} Ko)` : ''}
+        </Text>
         <View style={styles.card}>
+          {logView.truncated ? <Text style={styles.tailNote}>Fin du journal ; le partage contient le tout.</Text> : null}
           <Text selectable style={styles.mono}>
-            {logText || '(vide)'}
+            {logView.text || '(vide)'}
           </Text>
         </View>
-
-        <Button title="Partager le rapport" onPress={() => void Share.share({ message: report.slice(0, 60000) })} />
-        <Button title="Actualiser" variant="secondary" onPress={() => setRefreshKey((k) => k + 1)} />
-        <Button
-          title="Vider le journal"
-          variant="secondary"
-          onPress={() => {
-            clearLog();
-            setRefreshKey((k) => k + 1);
-          }}
-        />
       </ScrollView>
     </SafeAreaView>
   );
@@ -81,7 +89,10 @@ export function DiagnosticsScreen() {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
-  content: { padding: spacing.lg, gap: spacing.md },
+  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xl },
+  actions: { flexDirection: 'row', gap: spacing.sm, paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  action: { flex: 1, paddingHorizontal: spacing.sm },
+  tailNote: { fontSize: 11, color: colors.muted, fontStyle: 'italic' },
   lead: { color: colors.muted, fontSize: 14, lineHeight: 20 },
   section: { fontSize: 13, color: colors.muted, marginTop: spacing.sm, textTransform: 'uppercase' },
   card: { backgroundColor: colors.surface, borderRadius: radius.md, padding: spacing.md, gap: spacing.sm },

@@ -7,13 +7,23 @@
  * protégées : le journal ne doit jamais être la cause d'un plantage.
  */
 
-const MAX_LOG_CHARS = 120_000;
+/** Le journal est volontairement borné : il doit rester lisible et partageable. */
+const MAX_LOG_CHARS = 40_000;
+/** Une pile d'appel entière est illisible sur un téléphone et remplit le journal. */
+const MAX_STACK_FRAMES = 12;
 
 type Level = 'info' | 'warn' | 'error';
 
-/** Tampon mémoire, utilisable même si l'écriture disque échoue. */
-const memory: string[] = [];
+/**
+ * Contenu du journal, en mémoire, reflet du fichier. Le garder ici évite de
+ * relire le fichier à chaque ligne et rend le regroupement des répétitions
+ * immédiat.
+ */
+let lines: string[] | null = null;
 let fileBroken = false;
+/** Signature de la dernière entrée, pour compter les répétitions. */
+let lastSignature = '';
+let lastRepeats = 1;
 
 function timestamp(): string {
   try {
@@ -50,7 +60,11 @@ function logFile(): LogFileHandle | null {
 
 export function describeError(error: unknown): string {
   if (error instanceof Error) {
-    const stack = error.stack ? `\n${error.stack}` : '';
+    // La pile est tronquée : au-delà d'une douzaine de niveaux elle n'apprend
+    // plus rien et fait gonfler le journal de plusieurs kilo-octets par erreur.
+    const frames = (error.stack ?? '').split('\n').slice(0, MAX_STACK_FRAMES + 1);
+    const truncated = (error.stack ?? '').split('\n').length > frames.length ? '\n    …' : '';
+    const stack = error.stack ? `\n${frames.join('\n')}${truncated}` : '';
     return `${error.name}: ${error.message}${stack}`;
   }
   try {
@@ -60,41 +74,82 @@ export function describeError(error: unknown): string {
   }
 }
 
-/** Ajoute une ligne au journal (mémoire + disque). */
-export function log(level: Level, message: string, error?: unknown): void {
-  const line = `[${timestamp()}] ${level.toUpperCase()} ${message}${error === undefined ? '' : `\n${describeError(error)}`}`;
-  memory.push(line);
-  if (memory.length > 500) memory.splice(0, memory.length - 500);
-  if (level === 'error') console.error(line);
-  else if (level === 'warn') console.warn(line);
-  else console.log(line);
+/** Charge le contenu existant, une seule fois par session. */
+function ensureLines(): string[] {
+  if (lines) return lines;
+  lines = [];
+  const file = logFile();
+  if (file) {
+    try {
+      const text = file.text();
+      if (text.length > 0) lines = text.split('\n').filter((l) => l.length > 0);
+    } catch {
+      fileBroken = true;
+    }
+  }
+  return lines;
+}
+
+/** Écrit le journal sur le disque, après l'avoir ramené sous la taille maximale. */
+function flush(): void {
+  const current = ensureLines();
+  let joined = current.join('\n');
+  while (joined.length > MAX_LOG_CHARS && current.length > 1) {
+    current.shift();
+    joined = current.join('\n');
+  }
   const file = logFile();
   if (!file) return;
   try {
-    const previous = file.text();
-    const next = `${previous}${line}\n`;
-    file.write(next.length > MAX_LOG_CHARS ? next.slice(next.length - MAX_LOG_CHARS) : next);
+    file.write(`${joined}\n`);
   } catch {
     fileBroken = true;
   }
 }
 
-/** Contenu complet du journal (disque si possible, sinon mémoire). */
-export function readLog(): string {
-  const file = logFile();
-  if (file) {
-    try {
-      const text = file.text();
-      if (text.trim().length > 0) return text;
-    } catch {
-      fileBroken = true;
-    }
+/** Ajoute une ligne au journal (mémoire + disque). */
+export function log(level: Level, message: string, error?: unknown): void {
+  const detail = error === undefined ? '' : `\n${describeError(error)}`;
+  const current = ensureLines();
+
+  // Les erreurs identiques qui se suivent sont comptées plutôt que recopiées :
+  // une boucle en échec remplissait sinon le journal de la même pile d'appel.
+  const signature = `${level}|${message}|${detail.split('\n')[1] ?? ''}`;
+  if (signature === lastSignature && current.length > 0) {
+    lastRepeats += 1;
+    current[current.length - 1] = `${current[current.length - 1]!.replace(/ \(×\d+\)$/, '')} (×${lastRepeats})`;
+    flush();
+    return;
   }
-  return memory.join('\n');
+  lastSignature = signature;
+  lastRepeats = 1;
+
+  const line = `[${timestamp()}] ${level.toUpperCase()} ${message}${detail}`;
+  if (level === 'error') console.error(line);
+  else if (level === 'warn') console.warn(line);
+  else console.log(line);
+  current.push(line);
+  flush();
+}
+
+/** Contenu complet du journal. */
+export function readLog(): string {
+  return ensureLines().join('\n');
+}
+
+/** Fin du journal, pour l'affichage : le tout est souvent trop long à rendre. */
+export function readLogTail(maxChars = 6_000): { text: string; truncated: boolean; totalChars: number } {
+  const full = readLog();
+  if (full.length <= maxChars) return { text: full, truncated: false, totalChars: full.length };
+  const cut = full.slice(full.length - maxChars);
+  const start = cut.indexOf('\n');
+  return { text: start >= 0 ? cut.slice(start + 1) : cut, truncated: true, totalChars: full.length };
 }
 
 export function clearLog(): void {
-  memory.length = 0;
+  lines = [];
+  lastSignature = '';
+  lastRepeats = 1;
   const file = logFile();
   try {
     file?.write('');

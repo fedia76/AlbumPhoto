@@ -30,7 +30,11 @@ journalise donc elle-même : erreurs JavaScript non rattrapées, erreurs de rend
 modules natifs indisponibles, dans `<documents>/diagnostics/app.log`.
 
 - Bouton **Diagnostic** en haut de l'écran d'accueil : état de chaque module natif,
-  journal complet, bouton de partage (message, mail…).
+  journal, et trois actions épinglées sous l'en-tête — **Partager**, **Actualiser**,
+  **Vider** — accessibles quelle que soit la longueur du journal.
+- Le journal est borné à 40 Ko, les piles d'appel sont tronquées à douze niveaux et les
+  erreurs identiques qui se suivent sont comptées (`×12`) au lieu d'être recopiées.
+  L'écran n'affiche que la fin du journal ; le partage contient le tout.
 - Si l'application s'est fermée avant d'afficher quoi que ce soit, un bandeau rouge
   le signale au lancement suivant et renvoie vers le journal.
 - Si le chargement échoue complètement, `index.ts` affiche un écran de secours avec
