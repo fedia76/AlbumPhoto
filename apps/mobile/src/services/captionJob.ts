@@ -34,8 +34,16 @@ export interface CaptionJobState {
   /** Légendes effectivement écrites par le modèle. */
   written: number;
   status: CaptionJobStatus;
+  /**
+   * Étape en cours. La préparation — télécharger puis charger le modèle — peut
+   * durer plusieurs minutes au premier lancement, sans qu'aucune légende
+   * n'avance : le dire évite de la prendre pour un blocage.
+   */
+  phase: 'preparing' | 'writing';
   /** Signe de vie du modèle : « lecture de la photo, 12 s », « 47 % »… */
   detail?: string;
+  /** Avancement du téléchargement du modèle (0..1), pendant la préparation. */
+  download?: number;
   /** Renseigné quand le modèle a dû être abandonné. */
   reason?: string;
   startedAt: number;
@@ -116,13 +124,19 @@ class CaptionJob {
   /** Progression du téléchargement du modèle, rapportée par le générateur. */
   reportDownload(progress: number): void {
     if (!this.isRunning()) return;
-    this.update(progress < 1 ? { detail: `téléchargement du modèle ${Math.round(progress * 100)} %` } : { detail: 'préparation du modèle' });
+    this.update({
+      download: progress,
+      detail: progress < 1 ? `téléchargement du modèle ${Math.round(progress * 100)} %` : 'chargement du modèle en mémoire',
+    });
   }
 
   /** Signe de vie pendant l'écriture d'une légende. */
   reportActivity(a: CaptionActivity): void {
     if (!this.isRunning()) return;
     const elapsed = `${Math.round(a.elapsedMs / 1000)} s`;
+    if (a.retryIn) {
+      return this.update({ detail: `téléchargement interrompu, nouvel essai dans ${Math.round(a.retryIn / 1000)} s` });
+    }
     if (a.phase === 'loading') return this.update({ detail: `préparation du modèle, ${elapsed}` });
     this.update({ detail: a.reading ? `lecture de la photo, ${elapsed}` : `${a.chars} caractères, ${elapsed}` });
   }
@@ -142,6 +156,7 @@ class CaptionJob {
       done: 0,
       written: 0,
       status: 'running',
+      phase: 'preparing',
       startedAt: Date.now(),
     };
     this.emit();
@@ -167,7 +182,19 @@ class CaptionJob {
 
   private async run(req: CaptionJobRequest, controller: AbortController): Promise<void> {
     const startedAt = Date.now();
+    /** Photos dont la légende n'est pas venue du modèle, par motif. */
+    const failures = new Map<string, number>();
     try {
+      // Le modèle est préparé ici, à part : son téléchargement se compte en
+      // minutes et le décompter du délai d'une légende revenait à l'abandonner
+      // pendant qu'il se chargeait encore.
+      this.update({ phase: 'preparing', detail: 'préparation du modèle' });
+      await req.generator.prepare?.(controller.signal);
+      if (controller.signal.aborted) {
+        this.finish('cancelled');
+        return;
+      }
+      this.update({ phase: 'writing' });
       await generateCaptions(req.generator, req.events, req.byPhoto, {
         ...req.params,
         signal: controller.signal,
@@ -182,16 +209,22 @@ class CaptionJob {
           this.update({ done: p.done });
         },
         onDiagnostic: (d) => {
-          if (d.outcome === 'ok') this.update({ written: (this.state?.written ?? 0) + 1 });
-          else log('warn', `Légende ${d.index}/${d.total} (${d.photoId}) : ${label(d)}`, d.error);
+          if (d.outcome === 'ok') {
+            this.update({ written: (this.state?.written ?? 0) + 1 });
+            return;
+          }
+          failures.set(d.outcome, (failures.get(d.outcome) ?? 0) + 1);
+          log('warn', `Légende ${d.index}/${d.total} (${d.photoId}) : ${label(d)}`, d.error);
         },
       });
-      const reason = (req.generator as { fallbackReason?: string | null }).fallbackReason;
       const summary = (req.generator as { summary?: () => string }).summary?.();
       log(
         'info',
-        `Légendes terminées en ${Math.round((Date.now() - startedAt) / 1000)} s${summary ? ` : ${summary}` : ''}.`,
+        `Légendes terminées en ${Math.round((Date.now() - startedAt) / 1000)} s : ${this.state?.written ?? 0}/${
+          this.state?.total ?? 0
+        } par le modèle${summary ? ` (${summary})` : ''}.`,
       );
+      const reason = (req.generator as { fallbackReason?: string | null }).fallbackReason ?? this.reasonFor(failures);
       this.finish(controller.signal.aborted ? 'cancelled' : 'done', reason ?? undefined);
     } catch (e) {
       log('error', "Écriture des légendes interrompue par une erreur", e);
@@ -203,6 +236,16 @@ class CaptionJob {
       this.generator = null;
       this.controller = null;
     }
+  }
+
+  /**
+   * Pourquoi le modèle n'a rien donné, quand lui-même ne le dit pas : un délai
+   * dépassé n'est pas remonté au générateur, c'est le pipeline qui l'a coupé.
+   */
+  private reasonFor(failures: Map<string, number>): string | undefined {
+    const timeouts = (failures.get('timeout') ?? 0) + (failures.get('abandoned') ?? 0);
+    if (!timeouts || (this.state?.written ?? 0) > 0) return undefined;
+    return `Le modèle n'a répondu à aucune photo dans le temps imparti (${timeouts} sur ${this.state?.total ?? timeouts}).`;
   }
 
   /**

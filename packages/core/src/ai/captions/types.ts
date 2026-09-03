@@ -41,6 +41,16 @@ export interface CaptionRequest {
 /** Port : générateur de légendes (implémentations locale-LLM ou par gabarits). */
 export interface CaptionGenerator {
   readonly name: string;
+  /**
+   * Prépare ce qu'il faut avant la première légende — télécharger et charger un
+   * modèle, par exemple. À appeler avant `generateCaptions` : cette attente-là
+   * se compte en minutes et ne doit pas être imputée au délai d'une légende,
+   * qui l'abandonnerait au moment même où elle allait servir.
+   *
+   * Ne lève pas : un générateur qui n'a pas pu se préparer se rabat sur ce
+   * qu'il sait faire.
+   */
+  prepare?(signal?: AbortSignal): Promise<void>;
   generate(req: CaptionRequest, signal?: AbortSignal): Promise<string>;
 }
 

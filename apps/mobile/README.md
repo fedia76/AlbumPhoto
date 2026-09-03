@@ -133,8 +133,15 @@ zone où l'écrire ensuite. L'album s'ouvre, puis `captionJob` (`src/services/ca
 fait repasser le modèle photo par photo et remplace chaque légende au fil de l'eau
 (`onCaption` côté cœur, `applyPhotoCaptions` pour reposer le texte dans la bonne zone).
 
+- **La préparation du modèle est une étape à part** (`CaptionGenerator.prepare`). Télécharger
+  un gigaoctet puis le charger prend des minutes au premier lancement : compter cette attente
+  dans le délai d'une légende revenait à abandonner le modèle pendant qu'il se chargeait
+  encore — le moteur vision ne démarrait jamais. Le chargement est retenté trois fois : sur
+  réseau mobile, la coupure en cours de téléchargement (« Software caused connection abort »)
+  est la règle, pas l'exception.
 - L'avancement est visible partout : bandeau `CaptionProgress` dans l'éditeur et sur
-  l'écran d'accueil (compteur, signe de vie du modèle, bouton « Arrêter »).
+  l'écran d'accueil (préparation et pourcentage de téléchargement, puis compteur de légendes,
+  signe de vie du modèle, bouton « Arrêter »).
 - **Qui écrit le fichier.** Tant que l'éditeur est ouvert sur cet album, c'est lui qui
   applique les légendes et les sauvegarde (`captionJob.claim`) ; sinon la tâche écrit le
   fichier elle-même. Sans cette règle, l'éditeur travaillerait sur une copie périmée et
@@ -153,6 +160,11 @@ dès que la première ligne est complète, après un silence prolongé, ou au bo
 Les bornes dépendent du moteur (`GenerationLimits`) : un modèle vision reste muet le temps de
 lire l'image — jusqu'à deux minutes — et l'interrompre pendant cette phase gâcherait tout le
 travail, alors qu'un modèle textuel qui ne dit rien après 25 s est bloqué.
+
+Cas particulier des modèles « thinking » (Qwen 3) : un bloc `<think>` jamais refermé ne laisse
+aucun texte exploitable, quelle que soit sa longueur. `isStuckThinking` le repère au bout de
+600 caractères et coupe aussitôt, au lieu d'attendre le délai complet pour ne rien récolter —
+c'est ce qui brûlait quarante secondes par photo sur la moitié d'un album.
 Si le moteur natif ne rend toujours pas la main, la légende part au gabarit et le reste de
 l'album aussi — plutôt que d'attendre indéfiniment. Le cœur ajoute un garde-fou indépendant
 (`generateCaptions({ timeoutMs })`, 75 s) pour tout générateur qui se bloquerait.

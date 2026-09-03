@@ -5,6 +5,7 @@ import {
   buildCaptionPrompt,
   buildVisionCaptionPrompt,
   hasEnoughText,
+  isStuckThinking,
   sanitizeCaption,
   stripThinking,
   type CaptionGenerator,
@@ -108,8 +109,22 @@ const INTERRUPT_GRACE_MS = 15_000;
 const HEARTBEAT_MS = 1_000;
 /** Motif d'interruption normal : la légende est écrite, le reste est superflu. */
 const ENOUGH = 'texte suffisant';
+/**
+ * Caractères de réflexion tolérés avant de conclure que le modèle n'en sortira
+ * pas. Rien de ce qui suit un `<think>` jamais refermé n'est exploitable :
+ * attendre le délai complet, c'est perdre quarante secondes pour rien.
+ */
+const THINKING_BUDGET = 600;
 /** Échecs consécutifs avant de renoncer au modèle pour le reste de l'album. */
 const MAX_CONSECUTIVE_FAILURES = 2;
+/**
+ * Tentatives de chargement. Le modèle pèse plusieurs centaines de mégaoctets :
+ * sur un réseau mobile, la coupure en cours de téléchargement est la règle, pas
+ * l'exception (« Software caused connection abort »).
+ */
+const LOAD_ATTEMPTS = 3;
+/** Attente avant de retenter un chargement, en millisecondes. */
+const LOAD_RETRY_MS = [2_000, 6_000];
 
 /**
  * Chargement paresseux de react-native-executorch, précédé d'une vérification
@@ -155,6 +170,8 @@ export interface CaptionActivity {
   elapsedMs: number;
   /** Le modèle lit encore la photo : aucun mot n'est attendu avant la fin. */
   reading?: boolean;
+  /** Nouvel essai de chargement dans tant de millisecondes. */
+  retryIn?: number;
 }
 
 /** Comptes de l'album, pour le journal et le message de fin. */
@@ -244,6 +261,39 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
       });
     }
     return this.loading;
+  }
+
+  /**
+   * Télécharge et charge le modèle. À appeler avant la première légende : cette
+   * attente se compte en minutes sur un premier lancement, et elle ne doit pas
+   * être imputée au délai d'une légende — c'est ce qui condamnait le moteur
+   * vision, abandonné pendant son propre téléchargement.
+   *
+   * Ne lève jamais : un échec bascule l'album sur les gabarits, ce que
+   * `fallbackReason` explique.
+   */
+  async prepare(signal?: AbortSignal): Promise<void> {
+    if (this.llm || this.unavailable !== null) return;
+    for (let attempt = 1; attempt <= LOAD_ATTEMPTS; attempt++) {
+      if (signal?.aborted) return;
+      try {
+        await this.load();
+        return;
+      } catch (e) {
+        this.loading = undefined;
+        const message = e instanceof Error ? e.message : String(e);
+        const wait = LOAD_RETRY_MS[attempt - 1];
+        if (attempt < LOAD_ATTEMPTS && wait !== undefined) {
+          log('warn', `Chargement du modèle échoué (tentative ${attempt}/${LOAD_ATTEMPTS}), nouvel essai dans ${Math.round(wait / 1000)} s`, e);
+          this.onActivity?.({ phase: 'loading', index: 0, chars: 0, elapsedMs: 0, retryIn: wait });
+          await new Promise((resolve) => setTimeout(resolve, wait));
+          continue;
+        }
+        this.unavailable = message;
+        log('warn', `Modèle de légendes impossible à charger après ${attempt} tentatives, gabarits pour tout l'album`, e);
+        return;
+      }
+    }
   }
 
   /** Raison pour laquelle le modèle local n'a pas pu servir, le cas échéant. */
@@ -339,6 +389,7 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
       raw += token;
       lastToken = Date.now();
       if (hasEnoughText(raw, maxLength)) interrupt(ENOUGH);
+      else if (raw.length >= THINKING_BUDGET && isStuckThinking(raw)) interrupt('réflexion sans fin');
     };
     const heartbeat = setInterval(() => {
       const elapsed = Date.now() - startedAt;
@@ -380,11 +431,12 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
         );
         return sanitizeCaption(stripThinking(raw), req.maxLength);
       }
+      const thinking = isStuckThinking(answer.value);
       log(
-        'info',
+        thinking ? 'warn' : 'info',
         `Légende ${index} : ${seconds(elapsed)}${mediaPath ? ' (photo lue)' : ''}, ${this.tokenCounts(llm)}, ${raw.length} car.${
           stopped ? ` — coupée (${stopped})` : ''
-        }`,
+        }${thinking ? " — le modèle n'est jamais sorti de sa réflexion, rien d'exploitable" : ''}`,
       );
       return sanitizeCaption(stripThinking(answer.value), req.maxLength);
     } finally {

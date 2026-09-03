@@ -61,6 +61,35 @@ const FR: Record<string, string> = {
   bread: 'pain',
   dessert: 'dessert',
   fruit: 'fruit',
+  // Scènes d'intérieur et d'enfance : les plus fréquentes sur des photos de
+  // famille, et les plus voyantes quand elles restent en anglais.
+  toy: 'jouet',
+  plush: 'peluche',
+  'teddy bear': 'nounours',
+  doll: 'poupée',
+  bed: 'lit',
+  play: 'jeu',
+  playground: 'aire de jeux',
+  slide: 'toboggan',
+  swing: 'balançoire',
+  book: 'livre',
+  ball: 'ballon',
+  balloon: 'ballon',
+  gift: 'cadeau',
+  costume: 'déguisement',
+  hat: 'chapeau',
+  stroller: 'poussette',
+  sand: 'sable',
+  grass: 'herbe',
+  tent: 'tente',
+  church: 'église',
+  castle: 'château',
+  market: 'marché',
+  kitchen: 'cuisine',
+  farm: 'ferme',
+  zoo: 'zoo',
+  horse: 'cheval',
+  bird: 'oiseau',
 };
 
 export function translateLabel(label: string, locale = 'fr-FR'): string {
@@ -70,7 +99,13 @@ export function translateLabel(label: string, locale = 'fr-FR'): string {
 }
 
 /** Étiquettes trop génériques pour nourrir une légende. */
-const GENERIC = new Set(['person', 'people', 'face', 'human', 'photograph', 'photo', 'image', 'picture', 'event', 'fun', 'font', 'text', 'pattern', 'room', 'product']);
+const GENERIC = new Set([
+  'person', 'people', 'face', 'human', 'photograph', 'photo', 'image', 'picture', 'event', 'fun', 'font', 'text',
+  'pattern', 'room', 'product',
+  // Étiquettes que ML Kit produit en masse et qui ne disent rien d'une photo.
+  'leisure', 'comfort', 'textile', 'linens', 'furniture', 'material property', 'gesture', 'skin', 'sleeve', 'thigh',
+  'eyewear', 'flash photography', 'happy', 'smile', 'fashion', 'interior design', 'wood', 'plastic',
+]);
 
 export function usefulLabels(labels: { text: string; confidence?: number }[], locale = 'fr-FR', max = 4): string[] {
   return labels

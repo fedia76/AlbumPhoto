@@ -6,6 +6,7 @@ import {
   buildVisionCaptionPrompt,
   generateTemplateCaption,
   hasEnoughText,
+  isStuckThinking,
   joinNames,
   sanitizeCaption,
   stripThinking,
@@ -100,6 +101,14 @@ describe('captions', () => {
     expect(stripThinking('Un grand moment')).toBe('Un grand moment');
   });
 
+  it('spots a model that never leaves its thinking block', () => {
+    expect(isStuckThinking('<think>Je réfléchis encore')).toBe(true);
+    expect(isStuckThinking('<think>Hmm</think>\nUn grand moment')).toBe(false);
+    expect(isStuckThinking('Un grand moment')).toBe(false);
+    // Un deuxième bloc ouvert après un premier refermé compte, lui aussi.
+    expect(isStuckThinking('<think>a</think>b<think>c')).toBe(true);
+  });
+
   it('knows when the model has written enough to stop it', () => {
     // Rien encore, ou seulement de la réflexion : il faut le laisser travailler.
     expect(hasEnoughText('')).toBe(false);
@@ -110,7 +119,7 @@ describe('captions', () => {
     expect(hasEnoughText('<think>Hmm</think>\nUn grand moment\nEt encore')).toBe(true);
     // Un modèle qui part en boucle est coupé sur la longueur.
     expect(hasEnoughText('a'.repeat(600), 90)).toBe(true);
-    expect(hasEnoughText('<think>' + 'a'.repeat(3000))).toBe(true);
+    expect(hasEnoughText('<think>' + 'a'.repeat(1200))).toBe(true);
   });
 
   it('derives helpers', () => {

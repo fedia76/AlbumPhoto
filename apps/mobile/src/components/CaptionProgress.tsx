@@ -7,7 +7,11 @@ import { colors, radius, spacing } from '../theme';
 function headline(job: CaptionJobState): string {
   switch (job.status) {
     case 'running':
-      return `Légendes en cours… ${job.done} / ${job.total}`;
+      // Pendant la préparation aucun compteur n'avance : annoncer « 0 / 12 »
+      // ferait passer une attente normale pour une panne.
+      return job.phase === 'preparing'
+        ? `Préparation du modèle pour ${job.total} légendes…`
+        : `Légendes en cours… ${job.done} / ${job.total}`;
     case 'done':
       return job.reason ? `Légendes terminées (gabarits)` : `Légendes terminées : ${job.written} / ${job.total}`;
     case 'cancelled':
@@ -19,7 +23,8 @@ function headline(job: CaptionJobState): string {
 
 function detail(job: CaptionJobState): string | undefined {
   if (job.status === 'running') {
-    return job.detail ?? 'Vous pouvez feuilleter votre album pendant ce temps.';
+    const hint = job.phase === 'preparing' ? "Téléchargé une seule fois, puis conservé sur l'appareil." : 'Vous pouvez feuilleter votre album pendant ce temps.';
+    return job.detail ?? hint;
   }
   if (job.reason) return `${job.reason} Les légendes restantes viennent des gabarits.`;
   if (job.status === 'done') return "Les pages sont à jour.";
@@ -37,7 +42,10 @@ export function CaptionProgress({ albumId, onOpen }: { albumId?: string; onOpen?
   const job = useCaptionJob(albumId);
   if (!job) return null;
   const running = job.status === 'running';
-  const ratio = job.total > 0 ? job.done / job.total : 0;
+  // Pendant la préparation, la barre suit le téléchargement du modèle ; ensuite
+  // elle suit les légendes.
+  const ratio =
+    running && job.phase === 'preparing' ? job.download ?? 0 : job.total > 0 ? job.done / job.total : 0;
   const text = detail(job);
   return (
     <View style={[styles.banner, !running && job.status !== 'done' && styles.bannerWarn]}>

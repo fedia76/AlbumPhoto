@@ -78,6 +78,16 @@ export function buildVisionCaptionPrompt(req: CaptionRequest): { system: string;
   return { system, user };
 }
 
+/**
+ * Le modèle est-il resté enfermé dans sa réflexion ? Un bloc ouvert et jamais
+ * refermé ne laisse aucun texte exploitable : c'est un échec, pas une légende
+ * trop longue, et cela mérite d'être dit tel quel dans le journal.
+ */
+export function isStuckThinking(raw: string): boolean {
+  const opened = raw.lastIndexOf('<think>');
+  return opened >= 0 && !raw.includes('</think>', opened);
+}
+
 /** Retire les blocs de réflexion des modèles « thinking » (Qwen 3, etc.). */
 export function stripThinking(text: string): string {
   // Un bloc encore ouvert est retiré lui aussi : pendant une génération en
@@ -87,8 +97,12 @@ export function stripThinking(text: string): string {
 
 /** Une légende passé ce multiple de sa longueur cible : le modèle digresse. */
 const LENGTH_BUDGET = 6;
-/** Caractères bruts tolérés, blocs de réflexion compris, avant de couper. */
-const RAW_BUDGET = 3_000;
+/**
+ * Caractères bruts tolérés, blocs de réflexion compris, avant de couper. Une
+ * réflexion qui dépasse cette taille ne débouchera pas : mieux vaut rendre la
+ * main en quelques secondes que d'attendre le délai complet pour rien.
+ */
+const RAW_BUDGET = 1_200;
 
 /**
  * Le modèle en a-t-il assez écrit ? Une légende tient sur une ligne : dès que
