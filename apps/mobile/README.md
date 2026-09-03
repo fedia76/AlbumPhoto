@@ -73,6 +73,8 @@ src/screens/EditorScreen.tsx  éditeur : carrousel de pages, gabarits, placement
 src/screens/WizardScreen.tsx  assistant IA : parcours → personnes (fusion possible) → revue → style → génération
 src/components/SelectionReview.tsx  revue détaillée : photos retenues, écartées, et motifs
 src/services/photoThumbnails.ts     vignettes des photos de l'appareil, mises en cache
+src/services/captionJob.ts          écriture des légendes en tâche de fond (avancement, reprise, arrêt)
+src/components/CaptionProgress.tsx  bandeau d'avancement des légendes (éditeur et accueil)
 src/screens/DiagnosticsScreen.tsx  état des modules natifs et journal partageable
 src/diagnostics/              journal disque, détection de plantage au démarrage, écran de secours
 src/services/                 adaptateurs natifs des « ports » définis dans @albumphoto/core
@@ -121,6 +123,26 @@ src/services/                 adaptateurs natifs des « ports » définis dans @
   `initExecutorch({ resourceFetcher: ExpoResourceFetcher })` est appelé au premier chargement
   du modèle (`src/services/captioner.ts`). Sans lui, tout téléchargement échoue et
   l'application se rabat silencieusement sur les gabarits.
+
+#### Les légendes s'écrivent en tâche de fond
+
+L'assistant n'attend plus le modèle pour rendre l'album. Il assemble les pages avec des
+légendes de **gabarit** — instantanées, et surtout indispensables : le choix du gabarit de
+page dépend de la présence d'une légende, une page assemblée sans légende n'aurait aucune
+zone où l'écrire ensuite. L'album s'ouvre, puis `captionJob` (`src/services/captionJob.ts`)
+fait repasser le modèle photo par photo et remplace chaque légende au fil de l'eau
+(`onCaption` côté cœur, `applyPhotoCaptions` pour reposer le texte dans la bonne zone).
+
+- L'avancement est visible partout : bandeau `CaptionProgress` dans l'éditeur et sur
+  l'écran d'accueil (compteur, signe de vie du modèle, bouton « Arrêter »).
+- **Qui écrit le fichier.** Tant que l'éditeur est ouvert sur cet album, c'est lui qui
+  applique les légendes et les sauvegarde (`captionJob.claim`) ; sinon la tâche écrit le
+  fichier elle-même. Sans cette règle, l'éditeur travaillerait sur une copie périmée et
+  écraserait les légendes à sa prochaine sauvegarde automatique.
+- Une légende retouchée à la main n'est pas remplacée par celle du modèle.
+- « Arrière-plan » s'entend l'application au premier plan : c'est du JavaScript, il
+  s'interrompt si le système suspend l'application et reprend à son retour.
+- Le modèle est libéré à la fin de la tâche (plusieurs centaines de mégaoctets).
 
 #### Pourquoi une génération peut sembler figée
 

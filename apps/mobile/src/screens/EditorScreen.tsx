@@ -20,10 +20,12 @@ import type * as MediaLibrary from 'expo-media-library/legacy';
 import { getTemplate, newId, type Page, type Photo, type TemplateSlot } from '@albumphoto/core';
 import { useNavigation } from '../navigation';
 import { useAlbumEditor } from '../hooks/useAlbumEditor';
+import { CaptionProgress } from '../components/CaptionProgress';
 import { PageView } from '../components/PageView';
 import { TemplatePicker } from '../components/TemplatePicker';
 import { PhotoPicker } from '../components/PhotoPicker';
 import { Button, Header } from '../components/ui';
+import { captionJob } from '../services/captionJob';
 import { assetToSource } from '../services/photoSource';
 import { BundlePhotoImporter } from '../services/importer';
 import { colors, radius, spacing } from '../theme';
@@ -46,6 +48,14 @@ export function EditorScreen({ albumId }: { albumId: string }) {
   useEffect(() => {
     if (editor.error) Alert.alert('Erreur', editor.error, [{ text: 'OK', onPress: editor.clearError }]);
   }, [editor.error, editor.clearError]);
+
+  // Tant que cet écran est ouvert, c'est lui qui applique les légendes que la
+  // tâche de fond produit : lui laisser écrire le fichier de son côté ferait
+  // travailler l'éditeur sur une copie périmée. La revendication est refaite
+  // dès que l'album est chargé, car elle rejoue les légendes déjà écrites — et
+  // avant le chargement, il n'y avait rien à modifier.
+  const albumLoaded = album !== null;
+  useEffect(() => captionJob.claim(albumId, editor.applyCaptions), [albumId, editor.applyCaptions, albumLoaded]);
 
   const pageCount = album?.pages.length ?? 0;
   const safeIndex = Math.min(pageIndex, Math.max(0, pageCount - 1));
@@ -163,6 +173,7 @@ export function EditorScreen({ albumId }: { albumId: string }) {
         left={<Button title="Retour" variant="ghost" onPress={() => void editor.flush().then(nav.back)} />}
         right={editor.saving ? <ActivityIndicator /> : <Button title="Titre" variant="ghost" onPress={() => setEditingTitle(true)} />}
       />
+      <CaptionProgress albumId={albumId} />
 
       <FlatList
         horizontal

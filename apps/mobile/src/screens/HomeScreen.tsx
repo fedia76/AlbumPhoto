@@ -8,6 +8,8 @@ import { useNavigation } from '../navigation';
 import { deleteAlbum, listAlbums, saveAlbum, type AlbumSummary } from '../storage/albumStore';
 import { colors, radius, spacing } from '../theme';
 import { Button, EmptyState, Header } from '../components/ui';
+import { CaptionProgress } from '../components/CaptionProgress';
+import { captionJob } from '../services/captionJob';
 import { acknowledgeBootCrash, crashedAtPreviousBoot } from '../diagnostics/boot';
 
 export function HomeScreen() {
@@ -21,6 +23,15 @@ export function HomeScreen() {
       .catch(() => setAlbums([]));
   }, []);
   useEffect(refresh, [refresh]);
+  // Les légendes écrites en tâche de fond changent la date de modification :
+  // la liste doit s'en apercevoir sans attendre un retour d'écran.
+  useEffect(
+    () =>
+      captionJob.subscribe((job) => {
+        if (job && job.status !== 'running') refresh();
+      }),
+    [refresh],
+  );
 
   const createEmpty = async () => {
     const album = createAlbum({ title: 'Nouvel album', generator: APP_GENERATOR });
@@ -55,6 +66,7 @@ export function HomeScreen() {
           <Text style={styles.noticeText}>Touchez ici pour voir le détail et partager le rapport.</Text>
         </Pressable>
       ) : null}
+      <CaptionProgress onOpen={(albumId) => nav.navigate({ name: 'editor', albumId })} />
       <FlatList
         data={albums ?? []}
         keyExtractor={(a) => a.id}

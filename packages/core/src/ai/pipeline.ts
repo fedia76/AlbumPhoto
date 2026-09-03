@@ -208,6 +208,14 @@ export interface CaptionParams {
   maxTimeouts?: number;
   /** Appelé pour chaque photo, avec le détail de ce qui s'est passé. */
   onDiagnostic?: (d: CaptionDiagnostic) => void;
+  /**
+   * Appelé dès qu'une légende est prête, avant de passer à la suivante. Permet
+   * de l'appliquer sans attendre la fin de l'album — l'écriture peut durer
+   * plusieurs minutes, et l'utilisateur regarde ses pages pendant ce temps.
+   * L'attente est incluse dans le cycle : une écriture lente ralentit la suite
+   * plutôt que de s'empiler.
+   */
+  onCaption?: (photoId: string, text: string) => void | Promise<void>;
 }
 
 export function captionContextFor(
@@ -299,9 +307,13 @@ export async function generateCaptions(
       const startedAt = Date.now();
       let outcome: CaptionDiagnostic['outcome'] = 'ok';
       let failure: unknown;
+      const keep = async (text: string) => {
+        captions.set(photoId, text);
+        await params.onCaption?.(photoId, text);
+      };
       if (!generatorAlive) {
         outcome = 'abandoned';
-        captions.set(photoId, await fallback.generate({ context, style: params.style, variant: done }));
+        await keep(await fallback.generate({ context, style: params.style, variant: done }));
       } else {
         // Le délai prévient aussi le générateur : `abort` lui donne l'occasion
         // d'interrompre proprement une génération partie trop loin.
@@ -312,14 +324,14 @@ export async function generateCaptions(
           // `variant` fait tourner les tournures d'une photo à l'autre.
           const call = generator.generate({ context, style: params.style, variant: done, photo: sel.analysis.photo }, timer.signal);
           const text = await withTimeout(call, params.timeoutMs ?? 0, relay);
-          if (text) captions.set(photoId, text);
+          if (text) await keep(text);
           else outcome = 'empty';
         } catch (e) {
           failure = e;
           if (e instanceof CaptionTimeout) {
             outcome = 'timeout';
             timeouts++;
-            captions.set(photoId, await fallback.generate({ context, style: params.style, variant: done }));
+            await keep(await fallback.generate({ context, style: params.style, variant: done }));
             // Inutile de perdre le même délai sur chaque photo restante.
             if (timeouts >= maxTimeouts) generatorAlive = false;
           } else {

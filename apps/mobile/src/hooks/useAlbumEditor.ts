@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addPage,
+  applyPhotoCaptions,
   changePageTemplate,
   clearSlot,
   cloneAlbum,
@@ -27,6 +28,8 @@ export function useAlbumEditor(albumId: string) {
   const [saving, setSaving] = useState(false);
   const pending = useRef<Album | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Légendes saisies à la main : le modèle ne doit pas les écraser. */
+  const manualCaptions = useRef(new Set<string>());
 
   useEffect(() => {
     let cancelled = false;
@@ -82,10 +85,26 @@ export function useAlbumEditor(albumId: string) {
     [flush],
   );
 
+  /**
+   * Repose les légendes écrites en tâche de fond. Passe par `mutate` : l'album
+   * affiché et le fichier restent d'accord, et les retouches en cours ne sont
+   * pas perdues — ce qui arriverait si la tâche écrivait le fichier sous nos
+   * pieds pendant que l'éditeur tient une copie.
+   *
+   * Une légende retouchée à la main pendant que le modèle écrit encore n'est
+   * pas remplacée : c'est le dernier mot de l'utilisateur qui compte.
+   */
+  const applyCaptions = useCallback(
+    (captions: Map<string, string>) =>
+      mutate((d) => void applyPhotoCaptions(d, captions, (text) => manualCaptions.current.has(text))),
+    [mutate],
+  );
+
   return {
     album,
     error,
     saving,
+    applyCaptions,
     clearError: () => setError(null),
     flush,
     addPage: (templateId: string, index?: number) => {
@@ -102,7 +121,10 @@ export function useAlbumEditor(albumId: string) {
     placePhoto: (pageId: string, slotId: string, photoId: string) => mutate((d) => placePhoto(d, pageId, slotId, photoId)),
     clearSlot: (pageId: string, slotId: string) => mutate((d) => clearSlot(d, pageId, slotId)),
     setTransform: (pageId: string, slotId: string, t: PhotoTransform) => mutate((d) => void updateTransform(d, pageId, slotId, t)),
-    setText: (pageId: string, slotId: string, content: TextContent) => mutate((d) => setText(d, pageId, slotId, content)),
+    setText: (pageId: string, slotId: string, content: TextContent) => {
+      if (content.role === 'caption' && content.text.trim()) manualCaptions.current.add(content.text);
+      mutate((d) => setText(d, pageId, slotId, content));
+    },
     setTitle: (title: string) => mutate((d) => void (d.title = title)),
   };
 }

@@ -37,7 +37,8 @@ albumphoto/
    détail des quatre critères, et les photos écartées avec le motif (floue, quasi-doublon,
    trop de photos du même moment, album complet).
 6. **Légendes** dans le style choisi — drôle, formel, poétique, minimaliste, famille — par un
-   **modèle local** : soit un modèle vision-langage qui regarde la photo (LFM2.5-VL 1.6B),
+   **modèle local**, écrites en tâche de fond pendant que l'album est déjà consultable :
+   soit un modèle vision-langage qui regarde la photo (LFM2.5-VL 1.6B),
    soit un modèle textuel qui écrit à partir des faits relevés (Qwen 3 0.6B), avec repli sur un générateur
    par gabarits dont les tournures dépendent du contexte (personnes, date, saison, moment de la
    journée, contenu) et tournent d'une photo à l'autre.

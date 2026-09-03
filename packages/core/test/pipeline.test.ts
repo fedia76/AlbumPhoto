@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   TemplateCaptionGenerator,
+  applyPhotoCaptions,
   assembleAlbum,
   buildAlbum,
   chunkForPages,
@@ -213,6 +214,74 @@ describe('end-to-end pipeline (fake adapters)', () => {
       onProgress: (p) => seen.push(`${p.done}/${p.total}${p.current ? ` en cours:${p.current}` : ''}`),
     });
     expect(seen).toEqual(['0/1 en cours:1', '1/1']);
+  });
+
+  /**
+   * Écriture des légendes en tâche de fond : l'album est assemblé avec des
+   * légendes de gabarit, puis un modèle les remplace une par une, l'album déjà
+   * ouvert. Chaque légende doit être livrée dès qu'elle est prête et pouvoir
+   * être reposée dans les pages sans toucher au reste.
+   */
+  it('hands over each caption as it lands and reapplies it to an assembled album', async () => {
+    const g = fakeGallery();
+    const a = adapters(g);
+    const analyses = await scanPhotos(a);
+    const clusters = detectPeople(analyses, { threshold: 0.8 });
+    const selectedPeople = new Set([clusters[0]!.id]);
+    const personNames = new Map([[clusters[0]!.id, 'Léa']]);
+    const { selected, events, byPhoto } = selectBestPhotos(analyses, clusters, { selectedPeople, targetCount: 6, locale: 'fr-FR' });
+    const params = { style: 'family' as const, locale: 'fr-FR', albumTitle: 'Vacances', personNames, selectedPeople };
+
+    // 1. Légendes provisoires, puis album complet immédiatement disponible.
+    const provisional = await generateCaptions(a.captions, events, byPhoto, params);
+    const album = await assembleAlbum(a.importer, {
+      title: 'Vacances',
+      locale: 'fr-FR',
+      style: 'family',
+      captionModel: 'template',
+      selectedPeople,
+      personNames,
+      clusters,
+      byPhoto,
+      events,
+      captions: provisional,
+    });
+    const captionsOf = (): string[] =>
+      album.pages.flatMap((pg) => Object.values(pg.texts)).filter((t) => t.role === 'caption').map((t) => t.text);
+    expect(captionsOf().length).toBeGreaterThan(0);
+
+    // 2. Le modèle repasse derrière et rend chaque légende au fil de l'eau.
+    let n = 0;
+    const model = { name: 'faux-modèle', generate: async () => `Légende ${++n}` };
+    const delivered: string[] = [];
+    const rewritten = await generateCaptions(model, events, byPhoto, {
+      ...params,
+      onCaption: (photoId, text) => {
+        delivered.push(photoId);
+        // La légende est livrée avant la suivante, jamais toutes à la fin.
+        expect(text).toBe(`Légende ${delivered.length}`);
+      },
+    });
+    expect(delivered).toHaveLength(selected.length);
+
+    // 3. Application dans l'album : les identifiants passent par `sourceUri`.
+    const idByUri = new Map(album.photos.filter((ph) => ph.sourceUri).map((ph) => [ph.sourceUri!, ph.id]));
+    const byAlbumId = new Map(
+      [...rewritten].map(([sourceId, text]) => [idByUri.get(`file:///dcim/${sourceId}.jpg`)!, text] as const),
+    );
+    expect(applyPhotoCaptions(album, byAlbumId)).toBeGreaterThan(0);
+    const after = captionsOf();
+    expect(after.every((t) => t.split(' · ').every((part) => part.startsWith('Légende ')))).toBe(true);
+    // La couverture et les chapitres gardent leurs titres.
+    expect(album.pages[0]!.texts.title?.text).toBe('Vacances');
+    expect(album.pages.filter((pg) => pg.templateId === 'chapter').every((pg) => !!pg.texts.title?.text)).toBe(true);
+
+    // 4. Une retouche manuelle n'est pas écrasée au tour suivant.
+    const page = album.pages.find((pg) => Object.values(pg.texts).some((t) => t.role === 'caption'))!;
+    const slotId = Object.keys(page.texts).find((k) => page.texts[k]!.role === 'caption')!;
+    page.texts[slotId] = { text: 'Ma légende à moi', role: 'caption' };
+    applyPhotoCaptions(album, new Map([...byAlbumId].map(([id]) => [id, 'Autre chose'])), (text) => text === 'Ma légende à moi');
+    expect(page.texts[slotId]!.text).toBe('Ma légende à moi');
   });
 
   it('honours the scan limit and abort signal', async () => {

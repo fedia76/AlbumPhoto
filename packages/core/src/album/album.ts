@@ -224,6 +224,44 @@ export function setText(album: Album, pageId: string, slotId: string, content: T
   touch(album);
 }
 
+/**
+ * Repose les légendes d'un album déjà assemblé, à partir des textes par photo.
+ *
+ * Sert à écrire les légendes après coup : l'album est ouvert immédiatement avec
+ * des légendes de gabarit, qu'un modèle remplace ensuite une par une. Seules
+ * les zones portant déjà une légende sont touchées — jamais un titre, jamais
+ * une zone que l'utilisateur a remplie autrement. Une page peut réunir
+ * plusieurs photos : leurs légendes sont alors jointes comme à l'assemblage.
+ *
+ * @param captions - Légende par identifiant de photo *de l'album*.
+ * @param protectedText - Textes à ne pas écraser (une retouche manuelle).
+ * @returns Le nombre de zones effectivement modifiées.
+ */
+export function applyPhotoCaptions(album: Album, captions: Map<string, string>, protectedText?: (text: string) => boolean): number {
+  let changed = 0;
+  for (const page of album.pages) {
+    const template = getTemplate(album, page.templateId);
+    if (!template) continue;
+    const slot = template.slots.find((s) => s.kind === 'text' && page.texts[s.id]?.role === 'caption');
+    if (!slot) continue;
+    const current = page.texts[slot.id];
+    if (current && protectedText?.(current.text)) continue;
+    const parts = template.slots
+      .filter((s) => s.kind === 'photo')
+      .map((s) => page.photos[s.id]?.photoId)
+      .filter((id): id is string => !!id)
+      .map((id) => captions.get(id))
+      .filter((text): text is string => !!text);
+    if (!parts.length) continue;
+    const text = parts.join(' · ');
+    if (current?.text === text) continue;
+    page.texts[slot.id] = { ...current, text, role: 'caption' };
+    changed++;
+  }
+  if (changed) touch(album);
+  return changed;
+}
+
 /** Photos de la bibliothèque non utilisées par aucune page. */
 export function unusedPhotos(album: Album): Photo[] {
   const used = new Set<string>();

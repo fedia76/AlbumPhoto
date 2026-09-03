@@ -3,6 +3,7 @@ import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-nati
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   CAPTION_STYLES,
+  TemplateCaptionGenerator,
   assembleAlbum,
   detectPeople,
   generateCaptions,
@@ -10,14 +11,18 @@ import {
   scanPhotos,
   selectBestPhotos,
   type CaptionStyle,
-  type CaptionDiagnostic,
+  type Album,
+  type CaptionParams,
   type PersonCluster,
   type PhotoAnalysis,
+  type PhotoEvent,
+  type SelectedPhoto,
 } from '@albumphoto/core';
 import { APP_GENERATOR, CAPTION_TIMEOUT_MS, DEFAULT_SCAN_LIMIT, MAX_SCAN_LIMIT, SCAN_LIMIT_PRESETS } from '../config';
 import { useNavigation } from '../navigation';
 import { createAdapters, ensureMediaPermission, type AppAdapters } from '../services';
-import type { CaptionActivity, CaptionEngine } from '../services/captioner';
+import type { CaptionEngine } from '../services/captioner';
+import { captionJob } from '../services/captionJob';
 import { renderFaceThumbnail } from '../services/faceThumbnails';
 import { saveAlbum } from '../storage/albumStore';
 import { log } from '../diagnostics/log';
@@ -48,8 +53,8 @@ const ENGINE_LABELS: Record<CaptionEngine, string> = {
 
 const ENGINE_HINTS: Record<CaptionEngine, string> = {
   template: 'Instantané, hors ligne : des tournures écrites à l\'avance, complétées avec les prénoms, la date et le lieu du moment.',
-  llm: "Un petit modèle de langage rédige à partir des faits relevés (prénoms, étiquettes de contenu, date). Il ne voit pas la photo. Téléchargement ~600 Mo, quelques secondes par légende.",
-  vlm: "Un modèle vision-langage regarde chaque photo avant d'écrire : c'est ce qui donne les légendes les plus justes. Téléchargement ~1 Go et jusqu'à une minute par photo.",
+  llm: "Un petit modèle de langage rédige à partir des faits relevés (prénoms, étiquettes de contenu, date). Il ne voit pas la photo. Téléchargement ~600 Mo. L'album s'ouvre tout de suite, les légendes s'écrivent en arrière-plan.",
+  vlm: "Un modèle vision-langage regarde chaque photo avant d'écrire : c'est ce qui donne les légendes les plus justes. Téléchargement ~1 Go, jusqu'à une minute par photo. L'album s'ouvre tout de suite, les légendes s'écrivent en arrière-plan.",
 };
 
 /** Nom attribué d'office : il ne doit pas gagner sur un nom saisi à la fusion. */
@@ -76,10 +81,6 @@ export function WizardScreen() {
   const [mergePick, setMergePick] = useState<Set<string>>(new Set());
   const adaptersRef = useRef<AppAdapters | null>(null);
   const abortRef = useRef<AbortController | null>(null);
-  /** Dernier avancement des légendes, pour l'enrichir des signes de vie. */
-  const captionProgressRef = useRef({ done: 0, total: 0 });
-  /** Avancement du téléchargement du modèle de légendes (1 = terminé). */
-  const modelDownloadRef = useRef(1);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -112,51 +113,6 @@ export function WizardScreen() {
     setStep('intro');
   };
 
-  /** Étiquette de l'étape des légendes : la photo en cours, pas la dernière finie. */
-  const captionLabel = (detail?: string) => {
-    const { done, total } = captionProgressRef.current;
-    const photo = Math.min(done + 1, Math.max(total, 1));
-    return `Rédaction des légendes… ${photo} / ${total || '?'}${detail ? ` — ${detail}` : ''}`;
-  };
-
-  const captionValue = () => {
-    const { done, total } = captionProgressRef.current;
-    return 0.1 + (0.5 * done) / Math.max(1, total);
-  };
-
-  /**
-   * Le modèle écrit lentement, une légende peut demander une minute : sans ce
-   * compte-rendu (caractères produits, secondes écoulées) une génération longue
-   * ne se distingue pas d'une génération bloquée.
-   */
-  const showCaptionActivity = (a: CaptionActivity) => {
-    const elapsed = `${Math.round(a.elapsedMs / 1000)} s`;
-    if (a.phase === 'generating') {
-      // Un modèle vision reste muet le temps de regarder la photo : sans cette
-      // mention, ce silence passerait pour un blocage.
-      const detail = a.reading ? `lecture de la photo, ${elapsed}` : `${a.chars} caractères, ${elapsed}`;
-      setProgress({ label: captionLabel(detail), value: captionValue() });
-      return;
-    }
-    // Le modèle est téléchargé puis chargé à la première légende : c'est la
-    // plus longue attente de l'assistant, elle doit rester lisible.
-    const download = modelDownloadRef.current;
-    const detail = download < 1 ? `téléchargement du modèle ${Math.round(download * 100)} %` : `préparation du modèle, ${elapsed}`;
-    setProgress({ label: captionLabel(detail), value: download < 1 ? 0.05 + 0.05 * download : captionValue() });
-  };
-
-  /** Motif inscrit au journal pour chaque légende qui n'a pas abouti. */
-  const logCaption = (d: CaptionDiagnostic) => {
-    if (d.outcome === 'ok') return;
-    const reason: Record<Exclude<CaptionDiagnostic['outcome'], 'ok'>, string> = {
-      empty: 'réponse vide',
-      error: 'erreur du générateur',
-      timeout: `aucune réponse en ${Math.round(d.elapsedMs / 1000)} s, gabarit utilisé`,
-      abandoned: 'générateur abandonné, gabarit utilisé',
-    };
-    log('warn', `Légende ${d.index}/${d.total} (${d.photoId}) : ${reason[d.outcome]}`, d.error);
-  };
-
   const startScan = async () => {
     try {
       if (!(await ensureMediaPermission())) {
@@ -171,13 +127,10 @@ export function WizardScreen() {
         locale: LOCALE,
         captionEngine: engine,
         onFaceModelDownload: (p) => setProgress({ label: p < 1 ? 'Téléchargement du modèle de reconnaissance des visages (14 Mo)…' : 'Modèle de reconnaissance prêt.', value: p }),
-        // Le modèle n'est téléchargé qu'à la première légende : l'étiquette
-        // reste donc celle de l'étape des légendes.
-        onModelDownload: (p) => {
-          modelDownloadRef.current = p;
-          setProgress({ label: captionLabel(`téléchargement du modèle ${Math.round(p * 100)} %`), value: 0.05 + 0.05 * p });
-        },
-        onCaptionActivity: showCaptionActivity,
+        // Le modèle n'entre en jeu qu'après l'ouverture de l'album : ses
+        // rapports d'avancement vont au bandeau de la tâche de fond.
+        onModelDownload: (p) => captionJob.reportDownload(p),
+        onCaptionActivity: (a) => captionJob.reportActivity(a),
       });
       adaptersRef.current = adapters;
       const result = await scanPhotos(adapters, {
@@ -275,6 +228,45 @@ export function WizardScreen() {
     cancelMerge();
   }, [cancelMerge, clusters, mergePick, names]);
 
+  /**
+   * Confie l'écriture des légendes au modèle, en tâche de fond, l'album étant
+   * déjà sur disque. La galerie et l'album n'emploient pas les mêmes
+   * identifiants de photo : la correspondance passe par `sourceUri`, que
+   * l'assemblage reporte sur chaque photo copiée.
+   */
+  const startCaptionJob = (
+    album: Album,
+    chosen: SelectedPhoto[],
+    events: PhotoEvent[],
+    byPhoto: Map<string, string[]>,
+    seedCaptions: Map<string, string>,
+    params: Pick<CaptionParams, 'style' | 'locale' | 'albumTitle' | 'personNames' | 'selectedPeople'>,
+  ) => {
+    const adapters = adaptersRef.current;
+    if (!adapters || engine === 'template') return;
+    const albumPhotoIdBySource = new Map<string, string>();
+    const seed = new Map<string, string>();
+    const idByUri = new Map(album.photos.filter((p) => p.sourceUri).map((p) => [p.sourceUri!, p.id]));
+    for (const sel of chosen) {
+      const source = sel.analysis.photo;
+      const albumPhotoId = idByUri.get(source.uri);
+      if (!albumPhotoId) continue;
+      albumPhotoIdBySource.set(source.id, albumPhotoId);
+      const provisional = seedCaptions.get(source.id);
+      if (provisional) seed.set(albumPhotoId, provisional);
+    }
+    captionJob.start({
+      albumId: album.id,
+      albumTitle: album.title,
+      generator: adapters.captions,
+      events,
+      byPhoto,
+      params: { ...params, timeoutMs: CAPTION_TIMEOUT_MS[engine] },
+      albumPhotoIdBySource,
+      seed,
+    });
+  };
+
   const generate = async () => {
     const adapters = adaptersRef.current;
     if (!adapters) return;
@@ -290,29 +282,23 @@ export function WizardScreen() {
         setStep('style');
         return;
       }
-      captionProgressRef.current = { done: 0, total: chosen.length };
-      log('info', `Légendes : ${chosen.length} photos, moteur « ${adapters.captions.name} », style ${style}.`);
-      const captionsStartedAt = Date.now();
-      const captions = await generateCaptions(adapters.captions, events, byPhoto, {
+      // Légendes de gabarit d'abord : instantanées, elles réservent les zones de
+      // texte dans les gabarits de page et donnent un album complet tout de
+      // suite. Un modèle, lui, demanderait plusieurs minutes avant la première
+      // page — le sien les remplacera une par une, album déjà ouvert.
+      const captionParams = {
         style,
         locale: LOCALE,
         albumTitle: title,
         personNames: names,
         selectedPeople: selected,
+      };
+      setProgress({ label: 'Légendes provisoires…', value: 0.1 });
+      const captions = await generateCaptions(new TemplateCaptionGenerator(), events, byPhoto, {
+        ...captionParams,
         signal: abort.signal,
-        timeoutMs: CAPTION_TIMEOUT_MS[engine],
-        onDiagnostic: logCaption,
-        onProgress: (p) => {
-          captionProgressRef.current = { done: p.done, total: p.total };
-          setProgress({ label: captionLabel(), value: captionValue() });
-        },
       });
       if (abort.signal.aborted) return;
-      const captionStats = adapters.captions as { summary?: () => string };
-      log(
-        'info',
-        `Légendes terminées en ${Math.round((Date.now() - captionsStartedAt) / 1000)} s : ${captions.size}/${chosen.length} écrites${captionStats.summary ? ` (${captionStats.summary()})` : ''}.`,
-      );
       const album = await assembleAlbum(adapters.importer, {
         title,
         subtitle: subtitle || undefined,
@@ -326,18 +312,12 @@ export function WizardScreen() {
         events,
         captions,
         generator: APP_GENERATOR,
-        onProgress: (p) => setProgress({ label: `Copie des photos… ${p.done} / ${p.total}`, value: 0.6 + (0.4 * p.done) / Math.max(1, p.total) }),
+        onProgress: (p) => setProgress({ label: `Copie des photos… ${p.done} / ${p.total}`, value: 0.15 + (0.85 * p.done) / Math.max(1, p.total) }),
       });
       await saveAlbum(album);
-      // Le repli sur les gabarits doit être visible, pas silencieux.
-      const reason = (adapters.captions as { fallbackReason?: string | null }).fallbackReason;
-      if (reason) {
-        Alert.alert(
-          'Légendes écrites sans le modèle',
-          `Le modèle de langage local n'a pas pu être utilisé jusqu'au bout :\n${reason}\n\n${
-            captionStats.summary ? `${captionStats.summary()}.\n\n` : ''
-          }Le détail est dans l'écran « Diagnostic ».`,
-        );
+      // Le modèle prend le relais en tâche de fond, album déjà à l'écran.
+      if (engine !== 'template') {
+        startCaptionJob(album, chosen, events, byPhoto, captions, captionParams);
       }
       nav.replace({ name: 'editor', albumId: album.id });
     } catch (e) {
@@ -443,7 +423,7 @@ export function WizardScreen() {
               {step === 'scanning'
                 ? 'Visages, netteté et contenu sont analysés localement. Vous pouvez laisser l\'écran ouvert.'
                 : engine !== 'template'
-                  ? 'Le modèle écrit chaque légende sur l\'appareil : comptez plusieurs dizaines de secondes par photo. Le compteur ci-dessus avance tant qu\'il travaille ; « Annuler » reste possible.'
+                  ? 'Les photos sont copiées dans l\'album, avec des légendes provisoires. L\'album s\'ouvre dès que c\'est fait ; le modèle écrit ensuite les légendes définitives en arrière-plan.'
                   : 'Composition de l\'album…'}
             </Text>
           </View>
