@@ -1,4 +1,4 @@
-import { LLMModule, QWEN3_0_6B_QUANTIZED } from 'react-native-executorch';
+import type { LLMModule } from 'react-native-executorch';
 import {
   TemplateCaptionGenerator,
   buildCaptionPrompt,
@@ -6,6 +6,35 @@ import {
   type CaptionGenerator,
   type CaptionRequest,
 } from '@albumphoto/core';
+import { log } from '../diagnostics/log';
+
+type ExecutorchModule = typeof import('react-native-executorch');
+
+/** Nom du modèle, en dur : le lire depuis le module chargerait sa partie native. */
+const LLM_MODEL_NAME = 'qwen3-0.6b-quantized';
+
+/**
+ * Chargement paresseux de react-native-executorch. Son import lève une
+ * exception quand le runtime natif est absent (émulateur, ABI non gérée) :
+ * s'il était importé au démarrage, l'application se fermerait aussitôt.
+ */
+function loadExecutorch(): ExecutorchModule {
+  const mod = require('react-native-executorch') as ExecutorchModule;
+  if (!mod.isAvailable) {
+    throw new Error("Le runtime ExecuTorch n'est pas disponible sur cet appareil.");
+  }
+  return mod;
+}
+
+/** Le LLM local peut-il fonctionner ici ? Ne lève jamais. */
+export function isLocalLlmAvailable(): boolean {
+  try {
+    loadExecutorch();
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** Retire les blocs de réflexion des modèles « thinking » (Qwen 3). */
 export function stripThinking(text: string): string {
@@ -17,7 +46,7 @@ export function stripThinking(text: string): string {
  * une fois puis exécuté sur l'appareil. En cas d'échec, repli sur les gabarits.
  */
 export class LocalLlmCaptionGenerator implements CaptionGenerator {
-  readonly name = QWEN3_0_6B_QUANTIZED.modelName;
+  readonly name = LLM_MODEL_NAME;
   private llm?: LLMModule;
   private loading?: Promise<LLMModule>;
   private readonly fallback = new TemplateCaptionGenerator();
@@ -26,7 +55,8 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
 
   load(): Promise<LLMModule> {
     if (!this.loading) {
-      this.loading = LLMModule.fromModelName(QWEN3_0_6B_QUANTIZED, this.onDownloadProgress).then((llm) => {
+      const { LLMModule: Module, QWEN3_0_6B_QUANTIZED } = loadExecutorch();
+      this.loading = Module.fromModelName(QWEN3_0_6B_QUANTIZED, this.onDownloadProgress).then((llm) => {
         llm.configure({ generationConfig: { temperature: 0.7, topP: 0.9 } });
         this.llm = llm;
         return llm;
@@ -54,7 +84,8 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
       const text = sanitizeCaption(stripThinking(raw), req.maxLength);
       if (text.length >= 3) return text;
     } catch (e) {
-      console.warn('LLM local indisponible, repli sur les gabarits', e);
+      this.loading = undefined;
+      log('warn', 'LLM local indisponible, repli sur les gabarits', e);
     }
     return this.fallback.generate(req);
   }

@@ -1,4 +1,4 @@
-import { InferenceSession, Tensor } from 'onnxruntime-react-native';
+import type { InferenceSession } from 'onnxruntime-react-native';
 import { Directory, File, Paths } from 'expo-file-system';
 import {
   PIXEL_EMBEDDING_THRESHOLD,
@@ -12,6 +12,21 @@ import {
 import { ANALYSIS_THUMBNAIL, FACE_MODEL_CLUSTER_THRESHOLD, FACE_MODEL_FILENAME, FACE_MODEL_INPUT_SIZE, FACE_MODEL_MD5, FACE_MODEL_URL } from '../config';
 import { resolveFileUri } from './fileUri';
 import { decodeJpegBase64, renderJpegBase64 } from './pixels';
+import { log } from '../diagnostics/log';
+
+type OnnxModule = typeof import('onnxruntime-react-native');
+
+/**
+ * Chargement paresseux d'ONNX Runtime : son import exécute `install()` sur le
+ * module natif, ce qui fermerait l'application au démarrage en cas d'échec.
+ */
+function loadOnnx(): OnnxModule {
+  const mod = require('onnxruntime-react-native') as OnnxModule;
+  if (typeof mod.InferenceSession?.create !== 'function') {
+    throw new Error("ONNX Runtime n'est pas disponible sur cet appareil.");
+  }
+  return mod;
+}
 
 export interface EmbedderWithThreshold extends FaceEmbedder {
   readonly name: string;
@@ -62,11 +77,11 @@ export async function ensureFaceModel(onProgress?: (p: number) => void): Promise
     await File.downloadFileAsync(FACE_MODEL_URL, file, { idempotent: true });
     onProgress?.(1);
     if (modelIsValid(file)) return true;
-    console.warn('Modèle de visage téléchargé mais invalide (MD5), suppression');
+    log('warn', 'Modèle de visage téléchargé mais invalide (MD5), suppression');
     if (file.exists) file.delete();
     return false;
   } catch (e) {
-    console.warn('Téléchargement du modèle de visage impossible', e);
+    log('warn', 'Téléchargement du modèle de visage impossible', e);
     return false;
   }
 }
@@ -83,6 +98,7 @@ export class OnnxFaceEmbedder implements EmbedderWithThreshold {
   static async createIfAvailable(): Promise<OnnxFaceEmbedder | null> {
     const file = faceModelFile();
     if (!modelIsValid(file)) return null;
+    const { InferenceSession } = loadOnnx();
     const e = new OnnxFaceEmbedder();
     e.session = await InferenceSession.create(file.uri.replace(/^file:\/\//, ''));
     return e;
@@ -108,6 +124,7 @@ export class OnnxFaceEmbedder implements EmbedderWithThreshold {
         input[S * S + i] = (img.data[i * 4 + 1]! - 127.5) / 127.5;
         input[2 * S * S + i] = (img.data[i * 4 + 2]! - 127.5) / 127.5;
       }
+      const { Tensor } = loadOnnx();
       const inputName = session.inputNames[0]!;
       const result = await session.run({ [inputName]: new Tensor('float32', input, [1, 3, S, S]) });
       const first = result[session.outputNames[0]!];
@@ -125,7 +142,7 @@ export async function createFaceEmbedder(pixels: PixelReader, onModelDownload?: 
     const onnx = await OnnxFaceEmbedder.createIfAvailable();
     if (onnx) return onnx;
   } catch (e) {
-    console.warn('Modèle de visage indisponible, repli sur les pixels', e);
+    log('warn', 'Modèle de reconnaissance indisponible, repli sur les pixels', e);
   }
   return new PixelFaceEmbedder(pixels);
 }

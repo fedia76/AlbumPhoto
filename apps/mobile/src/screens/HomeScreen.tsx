@@ -8,10 +8,12 @@ import { useNavigation } from '../navigation';
 import { deleteAlbum, listAlbums, saveAlbum, type AlbumSummary } from '../storage/albumStore';
 import { colors, radius, spacing } from '../theme';
 import { Button, EmptyState, Header } from '../components/ui';
+import { acknowledgeBootCrash, crashedAtPreviousBoot } from '../diagnostics/boot';
 
 export function HomeScreen() {
   const nav = useNavigation();
   const [albums, setAlbums] = useState<AlbumSummary[] | null>(null);
+  const [showCrashNotice, setShowCrashNotice] = useState(crashedAtPreviousBoot);
 
   const refresh = useCallback(() => {
     listAlbums()
@@ -36,7 +38,23 @@ export function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
-      <Header title="Mes albums" />
+      <Header
+        title="Mes albums"
+        right={<Button title="Diagnostic" variant="ghost" onPress={() => nav.navigate({ name: 'diagnostics' })} />}
+      />
+      {showCrashNotice ? (
+        <Pressable
+          style={styles.notice}
+          onPress={() => {
+            acknowledgeBootCrash();
+            setShowCrashNotice(false);
+            nav.navigate({ name: 'diagnostics' });
+          }}
+        >
+          <Text style={styles.noticeTitle}>Le lancement précédent s'est interrompu</Text>
+          <Text style={styles.noticeText}>Touchez ici pour voir le détail et partager le rapport.</Text>
+        </Pressable>
+      ) : null}
       <FlatList
         data={albums ?? []}
         keyExtractor={(a) => a.id}
@@ -75,4 +93,7 @@ const styles = StyleSheet.create({
   cardTitle: { fontSize: 17, fontWeight: '600', color: colors.text },
   cardMeta: { fontSize: 13, color: colors.muted, marginTop: 2 },
   actions: { padding: spacing.md, gap: spacing.sm, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border, backgroundColor: colors.surface },
+  notice: { margin: spacing.md, marginBottom: 0, padding: spacing.md, borderRadius: radius.md, backgroundColor: '#fdeaea', borderWidth: 1, borderColor: colors.danger },
+  noticeTitle: { color: colors.danger, fontWeight: '700', fontSize: 15 },
+  noticeText: { color: colors.text, fontSize: 13, marginTop: 2 },
 });

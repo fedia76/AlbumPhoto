@@ -23,6 +23,23 @@ npx expo run:android       # ou run:ios (macOS)
 Expo Go ne convient pas (modules natifs). Le web n'est pas ciblé par cette app :
 la version web réutilisera `@albumphoto/core` avec ses propres adaptateurs.
 
+## Diagnostic sans ordinateur
+
+Il n'y a pas d'accès à `logcat` depuis un téléphone non connecté. L'application
+journalise donc elle-même : erreurs JavaScript non rattrapées, erreurs de rendu,
+modules natifs indisponibles, dans `<documents>/diagnostics/app.log`.
+
+- Bouton **Diagnostic** en haut de l'écran d'accueil : état de chaque module natif,
+  journal complet, bouton de partage (message, mail…).
+- Si l'application s'est fermée avant d'afficher quoi que ce soit, un bandeau rouge
+  le signale au lancement suivant et renvoie vers le journal.
+- Si le chargement échoue complètement, `index.ts` affiche un écran de secours avec
+  la pile d'appel plutôt que de fermer l'application.
+
+Les modules natifs d'IA (ML Kit, ONNX Runtime, ExecuTorch) sont chargés
+**paresseusement**, au moment de l'analyse : un module absent dégrade la
+fonctionnalité concernée au lieu d'empêcher l'application de démarrer.
+
 ## Architecture
 
 ```
@@ -35,6 +52,8 @@ src/components/…              gabarits, sélecteur de photos, carte personne, 
 src/screens/HomeScreen.tsx    liste des albums
 src/screens/EditorScreen.tsx  éditeur : gabarits, placement, zoom, textes, pages
 src/screens/WizardScreen.tsx  assistant IA : parcours → personnes → style → génération
+src/screens/DiagnosticsScreen.tsx  état des modules natifs et journal partageable
+src/diagnostics/              journal disque, détection de plantage au démarrage, écran de secours
 src/services/                 adaptateurs natifs des « ports » définis dans @albumphoto/core
 ```
 

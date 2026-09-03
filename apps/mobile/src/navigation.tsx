@@ -1,6 +1,10 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
-export type Route = { name: 'home' } | { name: 'editor'; albumId: string } | { name: 'wizard' };
+export type Route =
+  | { name: 'home' }
+  | { name: 'editor'; albumId: string }
+  | { name: 'wizard' }
+  | { name: 'diagnostics' };
 
 interface Nav {
   route: Route;
