@@ -30,17 +30,10 @@ import { log } from '../diagnostics/log';
 import { colors, radius, spacing } from '../theme';
 import { Button, Chip, Header, ProgressBar } from '../components/ui';
 import { PersonCard } from '../components/PersonCard';
+import { STYLE_LABELS } from '../components/CaptionChooser';
 import { SelectionReview } from '../components/SelectionReview';
 
 type Step = 'intro' | 'scanning' | 'people' | 'review' | 'style' | 'generating';
-
-const STYLE_LABELS: Record<CaptionStyle, string> = {
-  funny: 'Drôle',
-  formal: 'Formel',
-  poetic: 'Poétique',
-  minimal: 'Minimaliste',
-  family: 'Famille',
-};
 
 const LOCALE = 'fr-FR';
 

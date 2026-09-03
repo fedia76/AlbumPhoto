@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   addPage,
-  applyPhotoCaptions,
+  applyPhotoDrafts,
   changePageTemplate,
   clearSlot,
   cloneAlbum,
@@ -12,6 +12,7 @@ import {
   updateTransform,
   upsertPhoto,
   type Album,
+  type CaptionDraft,
   type Photo,
   type PhotoTransform,
   type TextContent,
@@ -95,8 +96,8 @@ export function useAlbumEditor(albumId: string) {
    * pas remplacée : c'est le dernier mot de l'utilisateur qui compte.
    */
   const applyCaptions = useCallback(
-    (captions: Map<string, string>) =>
-      mutate((d) => void applyPhotoCaptions(d, captions, (text) => manualCaptions.current.has(text))),
+    (drafts: Map<string, CaptionDraft>) =>
+      mutate((d) => void applyPhotoDrafts(d, drafts, (text) => manualCaptions.current.has(text))),
     [mutate],
   );
 

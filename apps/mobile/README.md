@@ -76,6 +76,7 @@ src/services/photoThumbnails.ts     vignettes des photos de l'appareil, mises en
 src/services/captionJob.ts          écriture des légendes en tâche de fond (avancement, reprise, arrêt)
 src/services/remoteWriter.ts        rédaction des légendes par Claude Haiku 4.5 (description seule, jamais la photo)
 src/services/apiKey.ts              clé d'API conservée sur l'appareil (magasin sécurisé, repli fichier)
+src/components/CaptionChooser.tsx   description du modèle et propositions de légendes, dans l'éditeur
 src/components/CaptionProgress.tsx  bandeau d'avancement des légendes (éditeur et accueil)
 src/screens/DiagnosticsScreen.tsx  état des modules natifs et journal partageable
 src/diagnostics/              journal disque, détection de plantage au démarrage, écran de secours
@@ -130,7 +131,28 @@ metro.config.js               redirige le fichier Node du SDK Anthropic vers son
     épuisé, la légende du modèle local prend le relais, puis le gabarit.
 
   La description est demandée **en anglais** : ces petits modèles y décrivent nettement
-  mieux, et le texte ne sert qu'à nourrir le rédacteur — il n'est jamais affiché.
+  mieux. Elle est conservée dans l'album et consultable dans l'éditeur.
+
+#### Description et propositions
+
+La qualité d'une légende est plafonnée par celle de la description : le rédacteur ne voit
+que ce texte. Quatre choix la soignent (`buildDescriptionPrompt`) :
+
+- **une consigne structurée** — qui, quoi, où, puis ce qui rend le moment particulier —
+  plutôt qu'un « décris bien » : un petit modèle suit une liste, pas un adjectif ;
+- **l'ancrage sur ce que l'appareil sait déjà** : le nombre de visages détectés par ML Kit
+  (« fais-y confiance plutôt qu'à ton propre compte » — ces modèles comptent mal), le
+  moment de la journée, les étiquettes de contenu ;
+- **768 px de côté long** au lieu de 512 : au-delà de la tuile du modèle, c'est un visage
+  lisible là où la vignette ne montrait qu'une tache ;
+- **deux ou trois phrases** plutôt qu'une : le rédacteur sait résumer, pas deviner.
+
+Le rédacteur en ligne renvoie ensuite **quatre légendes pour chacun des cinq styles en un
+seul appel** — grouper les styles coûte moins cher que cinq requêtes et évite qu'il se
+répète d'un style à l'autre. La légende du style choisi habille la page ; les vingt
+propositions et la description sont enregistrées dans l'album (`Photo.description`,
+`Photo.captionOptions`) et s'affichent en touchant une légende dans l'éditeur, où il
+suffit d'en toucher une autre pour changer d'avis. Rien n'est régénéré à ce moment-là.
 
   Les réglages d'échantillonnage (température, `topP`) sont laissés aux presets : chacun
   porte les valeurs recommandées par ses auteurs, les écraser dégradait les légendes.

@@ -2,6 +2,7 @@ import { newId, nowIso } from './ids';
 import { BUILTIN_TEMPLATES, cloneTemplate, getBuiltinTemplate, photoSlots } from './templates';
 import type {
   Album,
+  CaptionOption,
   Page,
   PageSize,
   Photo,
@@ -260,6 +261,28 @@ export function applyPhotoCaptions(album: Album, captions: Map<string, string>, 
   }
   if (changed) touch(album);
   return changed;
+}
+
+/**
+ * Repose les légendes *et* ce qui a servi à les écrire : la description de la
+ * photo et les propositions restent dans l'album, consultables et
+ * interchangeables sans relancer le moindre modèle.
+ *
+ * @returns Le nombre de zones de texte modifiées.
+ */
+export function applyPhotoDrafts(
+  album: Album,
+  drafts: Map<string, { text: string; description?: string; options?: CaptionOption[] }>,
+  protectedText?: (text: string) => boolean,
+): number {
+  for (const [photoId, draft] of drafts) {
+    const photo = getPhoto(album, photoId);
+    if (!photo) continue;
+    if (draft.description) photo.description = draft.description;
+    if (draft.options?.length) photo.captionOptions = draft.options;
+  }
+  const captions = new Map([...drafts].map(([photoId, draft]) => [photoId, draft.text]));
+  return applyPhotoCaptions(album, captions, protectedText);
 }
 
 /** Photos de la bibliothèque non utilisées par aucune page. */

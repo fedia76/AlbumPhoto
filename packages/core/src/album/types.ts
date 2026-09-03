@@ -119,6 +119,12 @@ export interface GeoPoint {
 }
 
 /** Une photo de l'album. Le fichier est stocké dans le bundle (`src`). */
+/** Légende proposée par l'IA dans un style donné, à choisir dans l'éditeur. */
+export interface CaptionOption {
+  style: CaptionStyle;
+  text: string;
+}
+
 export interface Photo {
   id: string;
   /** Chemin relatif au bundle, ex. `photos/3f2a….jpg`. */
@@ -141,6 +147,14 @@ export interface Photo {
   score?: number;
   /** Étiquettes de contenu (IA locale) ex. « plage », « gâteau ». */
   labels?: string[];
+  /**
+   * Ce que le modèle vision a vu sur la photo. Conservé dans l'album : c'est la
+   * matière première des légendes, et le seul moyen de comprendre pourquoi une
+   * légende dit ce qu'elle dit.
+   */
+  description?: string;
+  /** Légendes proposées, tous styles confondus, pour choisir dans l'éditeur. */
+  captionOptions?: CaptionOption[];
 }
 
 export interface Person {

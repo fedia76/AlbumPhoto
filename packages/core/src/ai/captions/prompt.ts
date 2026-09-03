@@ -1,4 +1,4 @@
-import type { CaptionStyle } from '../../album/types';
+import { CAPTION_STYLES, type CaptionOption, type CaptionStyle } from '../../album/types';
 import type { CaptionRequest } from './types';
 import { DEFAULT_CAPTION_MAX_LENGTH } from './types';
 import { joinNames } from './context';
@@ -90,12 +90,101 @@ export function buildCaptionPrompt(req: CaptionRequest): { system: string; user:
  * majoritairement en anglais et y décrivent nettement mieux. La description
  * n'est pas montrée à l'utilisateur, elle nourrit le rédacteur.
  */
-export function buildDescriptionPrompt(): { system: string; user: string } {
-  return {
-    system:
-      'You describe photographs factually for a caption writer. One or two short sentences. Say who is in frame (adults, children, babies, nobody), what they are doing, the setting, and the mood. Never invent names. No preamble, no commentary.',
-    user: 'Describe this photo.',
-  };
+export function buildDescriptionPrompt(req?: CaptionRequest): { system: string; user: string } {
+  const c = req?.context;
+  // Ce que l'appareil sait déjà : le modèle n'a pas à le deviner, et le lui
+  // dire l'empêche de se tromper sur ce qui est vérifiable. Un petit modèle
+  // compte mal les personnes et invente volontiers un décor plausible.
+  const known: string[] = [];
+  if (c?.faceCount) known.push(`Face detection found ${c.faceCount} face(s) — trust this count over your own.`);
+  else if (c && c.faceCount === 0) known.push('Face detection found nobody — this is probably a scene or an object.');
+  if (c?.timeOfDay) known.push(`Taken in the ${c.timeOfDay}.`);
+  if (c?.labels.length) known.push(`Automatic tags (may be wrong): ${c.labels.join(', ')}.`);
+
+  const system = [
+    'You describe photographs for a caption writer who cannot see them.',
+    'Answer in English, in two or three sentences, covering in this order:',
+    '1. WHO is in frame — adults, children, babies, nobody — and their apparent ages.',
+    '2. WHAT they are doing, and where their attention goes.',
+    '3. WHERE it is: indoors or outdoors, the setting, notable objects.',
+    '4. What makes this particular moment worth a caption: an expression, a gesture, a detail, the light.',
+    'Report only what you can see. Never invent names, places or events.',
+    'Say "unclear" rather than guessing. No preamble, no bullet points, no commentary.',
+  ].join(' ');
+  const user = ['Describe this photo.', ...known].join('\n');
+  return { system, user };
+}
+
+/** Nombre de propositions demandées par style. */
+export const PROPOSALS_PER_STYLE = 4;
+
+/**
+ * Demande une série de légendes — plusieurs par style — en un seul appel.
+ * Grouper les styles vaut mieux que cinq requêtes : le rédacteur voit d'un coup
+ * l'éventail qu'il produit et se répète moins d'un style à l'autre.
+ */
+export function buildProposalsPrompt(req: CaptionRequest): { system: string; user: string } {
+  const { context: c } = req;
+  const fr = c.locale.startsWith('fr');
+  const maxLen = req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
+  const styles = CAPTION_STYLES.map((style) => {
+    const [a, b] = fr ? EXAMPLES_FR[style] : EXAMPLES_EN[style];
+    const tone = fr ? STYLE_FR[style] : STYLE_EN[style];
+    return `- "${style}" : ${tone}. ${fr ? 'Par exemple' : 'For example'} « ${a} » ; « ${b} »`;
+  }).join('\n');
+
+  const system = fr
+    ? [
+        `Tu écris des légendes d'album photo en français, ${maxLen} caractères maximum chacune.`,
+        `Pour chacun des cinq styles ci-dessous, propose ${PROPOSALS_PER_STYLE} légendes nettement différentes entre elles — pas cinq variantes de la même phrase.`,
+        styles,
+        "N'invente ni noms, ni lieux, ni détails absents des faits. N'utilise que les prénoms fournis.",
+        `Réponds uniquement par un objet JSON : {${CAPTION_STYLES.map((s) => `"${s}": [${PROPOSALS_PER_STYLE} légendes]`).join(', ')}}. Aucun texte autour.`,
+      ].join('\n')
+    : [
+        `You write photo album captions in English, at most ${maxLen} characters each.`,
+        `For each of the five tones below, propose ${PROPOSALS_PER_STYLE} clearly different captions — not five variants of one sentence.`,
+        styles,
+        'Do not invent names, places or details absent from the facts. Use only the first names given.',
+        `Reply with a JSON object only: {${CAPTION_STYLES.map((s) => `"${s}": [${PROPOSALS_PER_STYLE} captions]`).join(', ')}}. No surrounding text.`,
+      ].join('\n');
+
+  return { system, user: buildCaptionPrompt(req).user };
+}
+
+/**
+ * Lit la réponse du rédacteur. Tolérante à dessein : un modèle encadre parfois
+ * son JSON de texte ou de balises, et perdre vingt propositions pour une accolade
+ * de trop serait dommage.
+ */
+export function parseCaptionProposals(raw: string, maxLength = DEFAULT_CAPTION_MAX_LENGTH): CaptionOption[] {
+  const start = raw.indexOf('{');
+  const end = raw.lastIndexOf('}');
+  if (start < 0 || end <= start) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.slice(start, end + 1));
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== 'object' || parsed === null) return [];
+  const out: CaptionOption[] = [];
+  const seen = new Set<string>();
+  for (const style of CAPTION_STYLES) {
+    const values = (parsed as Record<string, unknown>)[style];
+    if (!Array.isArray(values)) continue;
+    for (const value of values) {
+      if (typeof value !== 'string') continue;
+      const text = sanitizeCaption(value, maxLength);
+      // Deux styles proposent parfois la même phrase : la garder deux fois
+      // n'apporte rien à qui choisit.
+      const key = `${style}|${text.toLowerCase()}`;
+      if (text.length < 3 || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ style, text });
+    }
+  }
+  return out;
 }
 
 /**

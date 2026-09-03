@@ -165,6 +165,17 @@ function validatePhoto(ctx: Ctx, v: unknown, path: string): Photo | undefined {
   }
   if (Array.isArray(v.people)) p.people = v.people.filter(isStr);
   if (Array.isArray(v.labels)) p.labels = v.labels.filter(isStr);
+  const description = opt(ctx, v, 'description', path, isStr, 'chaîne');
+  if (description) p.description = description;
+  if (Array.isArray(v.captionOptions)) {
+    // Une proposition mal formée est ignorée plutôt que de rendre l'album
+    // illisible : ce sont des suggestions, pas le contenu des pages.
+    const options = v.captionOptions
+      .filter(isObj)
+      .filter((o): o is { style: CaptionStyle; text: string } => isStr(o.text) && isStr(o.style) && (CAPTION_STYLES as readonly string[]).includes(o.style))
+      .map((o) => ({ style: o.style, text: o.text }));
+    if (options.length) p.captionOptions = options;
+  }
   return p;
 }
 

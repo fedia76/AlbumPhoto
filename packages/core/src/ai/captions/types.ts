@@ -1,4 +1,4 @@
-import type { CaptionStyle } from '../../album/types';
+import type { CaptionOption, CaptionStyle } from '../../album/types';
 import type { SourcePhoto } from '../types';
 
 /** Tout ce que l'on sait d'une photo pour écrire sa légende. */
@@ -45,9 +45,28 @@ export interface CaptionRequest {
   photo?: SourcePhoto;
 }
 
+/**
+ * Légende retenue, avec ce qui a servi à l'écrire. La description et les
+ * propositions sont conservées dans l'album : elles expliquent la légende et
+ * permettent d'en choisir une autre sans relancer aucun modèle.
+ */
+export interface CaptionDraft {
+  text: string;
+  /** Ce que le modèle vision a vu sur la photo. */
+  description?: string;
+  /** Légendes proposées, tous styles confondus. */
+  options?: CaptionOption[];
+}
+
 /** Port : générateur de légendes (implémentations locale-LLM ou par gabarits). */
 export interface CaptionGenerator {
   readonly name: string;
+  /**
+   * Variante détaillée de `generate` : la légende retenue accompagnée de la
+   * description et des propositions. Les générateurs qui n'ont rien de plus à
+   * dire s'en dispensent — `generate` suffit alors.
+   */
+  draft?(req: CaptionRequest, signal?: AbortSignal): Promise<CaptionDraft>;
   /**
    * Prépare ce qu'il faut avant la première légende — télécharger et charger un
    * modèle, par exemple. À appeler avant `generateCaptions` : cette attente-là

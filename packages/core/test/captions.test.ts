@@ -3,7 +3,10 @@ import {
   CAPTION_STYLES,
   TemplateCaptionGenerator,
   buildCaptionPrompt,
+  buildDescriptionPrompt,
+  buildProposalsPrompt,
   buildVisionCaptionPrompt,
+  parseCaptionProposals,
   generateTemplateCaption,
   hasEnoughText,
   isStuckThinking,
@@ -102,6 +105,34 @@ describe('captions', () => {
     expect(user).toMatch(/Été 2026/);
     const english = buildVisionCaptionPrompt({ context: { ...ctx, locale: 'en-US' }, style: 'poetic' });
     expect(english.system).toMatch(/You can see the photo/);
+  });
+
+  it('asks for several captions per style in one go', () => {
+    const { system } = buildProposalsPrompt({ context: ctx, style: 'family' });
+    // Les cinq styles sont demandés ensemble, avec leurs exemples.
+    for (const style of CAPTION_STYLES) expect(system).toContain(`"${style}"`);
+    expect(system).toMatch(/4 légendes nettement différentes/);
+  });
+
+  it('reads back proposals, even wrapped in chatter', () => {
+    const raw = `Voici les propositions :\n\`\`\`json\n{"funny":["Le pyjama gagnant","Trois secondes avant"],"family":["Le goûter","Le goûter","Trop court" ],"formal":[],"nimportequoi":["x"]}\n\`\`\`\nVoilà !`;
+    const options = parseCaptionProposals(raw);
+    expect(options.map((o) => o.text)).toEqual(['Le pyjama gagnant', 'Trois secondes avant', 'Le goûter', 'Trop court']);
+    expect(options.every((o) => o.style === 'funny' || o.style === 'family')).toBe(true);
+    // Rien d'exploitable : aucune proposition, mais pas d'exception non plus.
+    expect(parseCaptionProposals('désolé, je ne peux pas')).toEqual([]);
+    expect(parseCaptionProposals('{ pas du json }')).toEqual([]);
+  });
+
+  it('grounds the description prompt in what the device already knows', () => {
+    const { system, user } = buildDescriptionPrompt({ context: ctx, style: 'family' });
+    expect(system).toMatch(/two or three sentences/);
+    // Le compte de visages de ML Kit prime sur celui du modèle, qui compte mal.
+    expect(user).toMatch(/2 face\(s\) — trust this count/);
+    expect(user).toMatch(/evening/);
+    expect(user).toMatch(/plage/);
+    const empty = buildDescriptionPrompt({ context: { ...ctx, faceCount: 0, labels: [] }, style: 'family' });
+    expect(empty.user).toMatch(/found nobody/);
   });
 
   it('strips thinking blocks, closed or still open', () => {

@@ -7,6 +7,7 @@ import {
   Modal,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -17,9 +18,10 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type * as MediaLibrary from 'expo-media-library/legacy';
-import { getTemplate, newId, type Page, type Photo, type TemplateSlot } from '@albumphoto/core';
+import { getTemplate, newId, photoSlots, type Page, type Photo, type TemplateSlot } from '@albumphoto/core';
 import { useNavigation } from '../navigation';
 import { useAlbumEditor } from '../hooks/useAlbumEditor';
+import { CaptionChooser } from '../components/CaptionChooser';
 import { CaptionProgress } from '../components/CaptionProgress';
 import { PageView } from '../components/PageView';
 import { TemplatePicker } from '../components/TemplatePicker';
@@ -61,6 +63,22 @@ export function EditorScreen({ albumId }: { albumId: string }) {
   const safeIndex = Math.min(pageIndex, Math.max(0, pageCount - 1));
   const page = album?.pages[safeIndex];
   const template = album && page ? getTemplate(album, page.templateId) : undefined;
+
+  /**
+   * Photos de la page dont on modifie la légende : ce sont elles qui portent la
+   * description et les propositions de l'IA. Vide pour un titre ou un
+   * sous-titre, qui ne décrivent aucune photo.
+   */
+  const captionPhotos = useMemo<Photo[]>(() => {
+    if (!album || !textFor || textFor.slotId === 'title' || textFor.slotId === 'subtitle') return [];
+    const current = album.pages.find((pg) => pg.texts[textFor.slotId] !== undefined || pg.id === page?.id);
+    const currentTemplate = current ? getTemplate(album, current.templateId) : undefined;
+    if (!current || !currentTemplate) return [];
+    return photoSlots(currentTemplate)
+      .map((slot) => current.photos[slot.id]?.photoId)
+      .map((photoId) => album.photos.find((ph) => ph.id === photoId))
+      .filter((ph): ph is Photo => !!ph);
+  }, [album, page?.id, textFor]);
 
   /** Change de page et amène le carrousel dessus. */
   const goToPage = useCallback(
@@ -273,6 +291,14 @@ export function EditorScreen({ albumId }: { albumId: string }) {
             <Text style={styles.modalTitle}>
               {editingTitle ? "Titre de l'album" : textFor?.slotId === 'title' ? 'Titre' : 'Légende'}
             </Text>
+            {captionPhotos.length > 0 ? (
+              <ScrollView style={styles.modalScroll} keyboardShouldPersistTaps="handled">
+                <CaptionChooser
+                  photos={captionPhotos}
+                  onPick={(text) => setTextFor((cur) => (cur ? { ...cur, text } : cur))}
+                />
+              </ScrollView>
+            ) : null}
             <TextInput
               autoFocus
               multiline={!editingTitle}
@@ -330,6 +356,7 @@ const styles = StyleSheet.create({
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: spacing.lg },
   modalCard: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
   modalTitle: { fontSize: 17, fontWeight: '600', color: colors.text },
+  modalScroll: { maxHeight: 280 },
   modalInput: { minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, fontSize: 16, color: colors.text, textAlignVertical: 'top' },
   overlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
 });

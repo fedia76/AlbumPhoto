@@ -1,5 +1,12 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { buildCaptionPrompt, sanitizeCaption, type CaptionRequest } from '@albumphoto/core';
+import {
+  buildCaptionPrompt,
+  buildProposalsPrompt,
+  parseCaptionProposals,
+  sanitizeCaption,
+  type CaptionOption,
+  type CaptionRequest,
+} from '@albumphoto/core';
 import { log } from '../diagnostics/log';
 import { readApiKey } from './apiKey';
 
@@ -19,6 +26,8 @@ import { readApiKey } from './apiKey';
 export const REMOTE_MODEL = 'claude-haiku-4-5';
 /** Une légende tient en quelques dizaines de jetons ; le reste est du gâchis. */
 const MAX_TOKENS = 200;
+/** Vingt propositions demandent de la place, mais restent brèves. */
+const PROPOSALS_MAX_TOKENS = 1_500;
 /** Au-delà, le réseau est en cause : la légende locale prendra le relais. */
 const TIMEOUT_MS = 20_000;
 
@@ -67,22 +76,56 @@ export class RemoteCaptionWriter {
         },
         signal ? { signal } : {},
       );
-      this.usage.requests++;
-      this.usage.inputTokens += response.usage.input_tokens;
-      this.usage.outputTokens += response.usage.output_tokens;
+      this.record(response);
       if (response.stop_reason === 'refusal') {
         log('warn', `Légende refusée par le rédacteur en ligne (${response.stop_details?.category ?? 'sans motif'}).`);
         return '';
       }
-      const text = response.content
-        .filter((block): block is Anthropic.TextBlock => block.type === 'text')
-        .map((block) => block.text)
-        .join('\n');
-      return sanitizeCaption(text, req.maxLength);
+      return sanitizeCaption(this.textOf(response), req.maxLength);
     } catch (e) {
       this.recordFailure(e);
       return '';
     }
+  }
+
+  /**
+   * Demande une série de légendes — plusieurs par style — en un seul appel.
+   * Un appel par photo plutôt que cinq : le rédacteur voit l'éventail qu'il
+   * produit et se répète moins d'un style à l'autre, pour un coût moindre.
+   */
+  async propose(req: CaptionRequest, signal?: AbortSignal): Promise<CaptionOption[]> {
+    if (!(await this.prepare()) || !this.client) return [];
+    const { system, user } = buildProposalsPrompt(req);
+    try {
+      const response = await this.client.messages.create(
+        {
+          model: REMOTE_MODEL,
+          max_tokens: PROPOSALS_MAX_TOKENS,
+          system,
+          messages: [{ role: 'user', content: user }],
+        },
+        signal ? { signal } : {},
+      );
+      this.record(response);
+      if (response.stop_reason === 'refusal') return [];
+      return parseCaptionProposals(this.textOf(response), req.maxLength);
+    } catch (e) {
+      this.recordFailure(e);
+      return [];
+    }
+  }
+
+  private record(response: Anthropic.Message): void {
+    this.usage.requests++;
+    this.usage.inputTokens += response.usage.input_tokens;
+    this.usage.outputTokens += response.usage.output_tokens;
+  }
+
+  private textOf(response: Anthropic.Message): string {
+    return response.content
+      .filter((block): block is Anthropic.TextBlock => block.type === 'text')
+      .map((block) => block.text)
+      .join('\n');
   }
 
   /** Coût de l'album, pour le journal. Tarifs Haiku 4.5 : 1 $ / 5 $ le million. */

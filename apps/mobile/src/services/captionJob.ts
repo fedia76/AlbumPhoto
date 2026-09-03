@@ -1,7 +1,8 @@
 import {
-  applyPhotoCaptions,
+  applyPhotoDrafts,
   generateCaptions,
   type CaptionDiagnostic,
+  type CaptionDraft,
   type CaptionGenerator,
   type CaptionParams,
   type PhotoEvent,
@@ -65,7 +66,7 @@ export interface CaptionJobRequest {
 
 type Listener = (state: CaptionJobState | null) => void;
 /** Un écran qui tient l'album en mémoire applique les légendes lui-même. */
-type Sink = (captions: Map<string, string>) => void;
+type Sink = (drafts: Map<string, CaptionDraft>) => void;
 
 function label(d: CaptionDiagnostic): string {
   switch (d.outcome) {
@@ -85,8 +86,8 @@ function label(d: CaptionDiagnostic): string {
 class CaptionJob {
   private state: CaptionJobState | null = null;
   private readonly listeners = new Set<Listener>();
-  /** Légendes courantes, par identifiant de photo de l'album. */
-  private captions = new Map<string, string>();
+  /** Brouillons courants (légende, description, propositions), par photo. */
+  private drafts = new Map<string, CaptionDraft>();
   private controller: AbortController | null = null;
   private generator: CaptionGenerator | null = null;
   private sink: { albumId: string; apply: Sink } | null = null;
@@ -115,7 +116,7 @@ class CaptionJob {
    */
   claim(albumId: string, apply: Sink): () => void {
     this.sink = { albumId, apply };
-    if (this.state?.albumId === albumId && this.captions.size) apply(new Map(this.captions));
+    if (this.state?.albumId === albumId && this.drafts.size) apply(new Map(this.drafts));
     return () => {
       if (this.sink?.apply === apply) this.sink = null;
     };
@@ -145,7 +146,7 @@ class CaptionJob {
   start(req: CaptionJobRequest): void {
     this.cancel();
     const total = req.events.reduce((n, e) => n + e.photos.length, 0);
-    this.captions = new Map(req.seed);
+    this.drafts = new Map([...req.seed].map(([photoId, text]) => [photoId, { text }]));
     const controller = new AbortController();
     this.controller = controller;
     this.generator = req.generator;
@@ -198,10 +199,10 @@ class CaptionJob {
       await generateCaptions(req.generator, req.events, req.byPhoto, {
         ...req.params,
         signal: controller.signal,
-        onCaption: async (sourceId, text) => {
+        onCaption: async (sourceId, draft) => {
           const albumPhotoId = req.albumPhotoIdBySource.get(sourceId);
           if (!albumPhotoId) return;
-          this.captions.set(albumPhotoId, text);
+          this.drafts.set(albumPhotoId, draft);
           await this.persist(req.albumId);
         },
         onProgress: (p) => {
@@ -253,16 +254,19 @@ class CaptionJob {
    * au fichier sinon. Les écritures sont sérialisées pour ne pas se croiser.
    */
   private persist(albumId: string): Promise<void> {
-    const captions = new Map(this.captions);
+    const drafts = new Map(this.drafts);
     const sink = this.sink;
     if (sink && sink.albumId === albumId) {
-      sink.apply(captions);
+      sink.apply(drafts);
       return Promise.resolve();
     }
     this.writing = this.writing.then(async () => {
       try {
         const album = await loadAlbum(albumId);
-        if (applyPhotoCaptions(album, captions)) await saveAlbum(album);
+        // La description et les propositions valent d'être enregistrées même
+        // quand la légende n'a pas changé.
+        applyPhotoDrafts(album, drafts);
+        await saveAlbum(album);
       } catch (e) {
         log('warn', "Légende impossible à enregistrer dans l'album", e);
       }

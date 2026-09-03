@@ -9,6 +9,7 @@ import {
   isStuckThinking,
   sanitizeCaption,
   stripThinking,
+  type CaptionDraft,
   type CaptionGenerator,
   type CaptionRequest,
 } from '@albumphoto/core';
@@ -65,8 +66,13 @@ const TEXT_LIMITS: GenerationLimits = { firstToken: 25_000, silence: 15_000, tot
  */
 const VISION_LIMITS: GenerationLimits = { firstToken: 120_000, silence: 20_000, total: 180_000 };
 
-/** Côté long de la vignette envoyée au modèle vision (il travaille en 512²). */
-const VISION_IMAGE_SIZE = 512;
+/**
+ * Côté long de la vignette envoyée au modèle vision. Au-delà de la tuile de
+ * 512² du modèle : plus de pixels, c'est un visage lisible et un objet
+ * reconnaissable là où la vignette carrée ne montrait qu'une tache — et la
+ * description est toute la matière du rédacteur.
+ */
+const VISION_IMAGE_SIZE = 768;
 
 /** Une description tient en une ou deux phrases ; au-delà c'est du bavardage. */
 const DESCRIPTION_MAX_LENGTH = 300;
@@ -355,6 +361,18 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     }
   }
 
+  /**
+   * Légende et description en un seul passage : quand le modèle voit la photo,
+   * la description est ce qui explique la légende — la garder ne coûte rien.
+   */
+  async draft(req: CaptionRequest, signal?: AbortSignal): Promise<CaptionDraft> {
+    if (!this.model.vision || this.unavailable !== null) return { text: await this.generate(req, signal) };
+    const description = await this.describe(req, signal);
+    const enriched: CaptionRequest = description ? { ...req, context: { ...req.context, description } } : req;
+    const text = await this.generate(enriched, signal);
+    return description ? { text, description } : { text };
+  }
+
   async generate(req: CaptionRequest, signal?: AbortSignal): Promise<string> {
     if (this.unavailable !== null) return this.useFallback(req);
     const index = ++this.index;
@@ -410,7 +428,7 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     const mediaPath = await this.photoForVision(req, index);
     const describing = mode === 'description' && !!mediaPath;
     const { system, user } = describing
-      ? buildDescriptionPrompt()
+      ? buildDescriptionPrompt(req)
       : mediaPath
         ? buildVisionCaptionPrompt(req)
         : buildCaptionPrompt(req);
@@ -588,16 +606,29 @@ export class HybridCaptionGenerator implements CaptionGenerator {
   }
 
   async generate(req: CaptionRequest, signal?: AbortSignal): Promise<string> {
+    return (await this.draft(req, signal)).text;
+  }
+
+  /**
+   * Le modèle local décrit la photo, le rédacteur en ligne propose plusieurs
+   * légendes par style en un appel. Celle du style choisi pour l'album habille
+   * la page ; les autres restent disponibles dans l'éditeur.
+   */
+  async draft(req: CaptionRequest, signal?: AbortSignal): Promise<CaptionDraft> {
     // Rédacteur définitivement hors jeu : inutile de décrire puis d'échouer,
     // le modèle local écrit directement sa propre légende.
-    if (this.writer.failureReason) return this.local.generate(req, signal);
+    if (this.writer.failureReason) return this.local.draft(req, signal);
     const description = await this.local.describe(req, signal);
     const enriched: CaptionRequest = description
       ? { ...req, context: { ...req.context, description } }
       : req;
-    const remote = await this.writer.write(enriched, signal);
-    if (remote.length >= 3) return remote;
-    return this.local.generate(enriched, signal);
+    const options = await this.writer.propose(enriched, signal);
+    const chosen = options.find((o) => o.style === req.style)?.text ?? '';
+    if (chosen) return { text: chosen, ...(description ? { description } : {}), options };
+    // Aucune proposition exploitable : une rédaction simple, puis le local.
+    const single = await this.writer.write(enriched, signal);
+    const text = single.length >= 3 ? single : await this.local.generate(enriched, signal);
+    return { text, ...(description ? { description } : {}), ...(options.length ? { options } : {}) };
   }
 
   /** Ce qui a manqué, le rédacteur en ligne d'abord. */

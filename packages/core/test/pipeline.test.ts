@@ -256,10 +256,10 @@ describe('end-to-end pipeline (fake adapters)', () => {
     const delivered: string[] = [];
     const rewritten = await generateCaptions(model, events, byPhoto, {
       ...params,
-      onCaption: (photoId, text) => {
+      onCaption: (photoId, draft) => {
         delivered.push(photoId);
         // La légende est livrée avant la suivante, jamais toutes à la fin.
-        expect(text).toBe(`Légende ${delivered.length}`);
+        expect(draft.text).toBe(`Légende ${delivered.length}`);
       },
     });
     expect(delivered).toHaveLength(selected.length);

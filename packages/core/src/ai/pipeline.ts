@@ -6,7 +6,7 @@ import { dHash } from './phash';
 import { clusterFaces, peopleByPhoto, type ClusterOptions } from './clustering';
 import { scorePhotos, type PhotoScore, type ScoringWeights } from './scoring';
 import { groupIntoEvents, selectPhotos, type PhotoEvent, type RejectedPhoto, type SelectedPhoto } from './selection';
-import type { CaptionGenerator, CaptionContext } from './captions/types';
+import type { CaptionDraft, CaptionGenerator, CaptionContext } from './captions/types';
 import { timeOfDayFromIso } from './captions/context';
 import { TemplateCaptionGenerator } from './captions/templateGenerator';
 import { buildAlbum, eventsToBuildInput } from './builder';
@@ -215,7 +215,7 @@ export interface CaptionParams {
    * L'attente est incluse dans le cycle : une écriture lente ralentit la suite
    * plutôt que de s'empiler.
    */
-  onCaption?: (photoId: string, text: string) => void | Promise<void>;
+  onCaption?: (photoId: string, draft: CaptionDraft) => void | Promise<void>;
 }
 
 export function captionContextFor(
@@ -307,13 +307,13 @@ export async function generateCaptions(
       const startedAt = Date.now();
       let outcome: CaptionDiagnostic['outcome'] = 'ok';
       let failure: unknown;
-      const keep = async (text: string) => {
-        captions.set(photoId, text);
-        await params.onCaption?.(photoId, text);
+      const keep = async (draft: CaptionDraft) => {
+        captions.set(photoId, draft.text);
+        await params.onCaption?.(photoId, draft);
       };
       if (!generatorAlive) {
         outcome = 'abandoned';
-        await keep(await fallback.generate({ context, style: params.style, variant: done }));
+        await keep({ text: await fallback.generate({ context, style: params.style, variant: done }) });
       } else {
         // Le délai prévient aussi le générateur : `abort` lui donne l'occasion
         // d'interrompre proprement une génération partie trop loin.
@@ -322,16 +322,21 @@ export async function generateCaptions(
         params.signal?.addEventListener('abort', relay);
         try {
           // `variant` fait tourner les tournures d'une photo à l'autre.
-          const call = generator.generate({ context, style: params.style, variant: done, photo: sel.analysis.photo }, timer.signal);
-          const text = await withTimeout(call, params.timeoutMs ?? 0, relay);
-          if (text) await keep(text);
+          const request = { context, style: params.style, variant: done, photo: sel.analysis.photo };
+          // Un générateur qui sait rendre la description et les propositions le
+          // fait ici : ce sont les mêmes appels de modèle, autant tout garder.
+          const call = generator.draft
+            ? generator.draft(request, timer.signal)
+            : generator.generate(request, timer.signal).then((text) => ({ text }));
+          const draft = await withTimeout(call, params.timeoutMs ?? 0, relay);
+          if (draft.text) await keep(draft);
           else outcome = 'empty';
         } catch (e) {
           failure = e;
           if (e instanceof CaptionTimeout) {
             outcome = 'timeout';
             timeouts++;
-            await keep(await fallback.generate({ context, style: params.style, variant: done }));
+            await keep({ text: await fallback.generate({ context, style: params.style, variant: done }) });
             // Inutile de perdre le même délai sur chaque photo restante.
             if (timeouts >= maxTimeouts) generatorAlive = false;
           } else {
