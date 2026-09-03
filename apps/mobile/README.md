@@ -2,6 +2,14 @@
 
 Application Expo (SDK 57, React Native) : éditeur d'album et assistant IA locale.
 
+## Obtenir l'APK sans ordinateur
+
+Le workflow `.github/workflows/android-apk.yml` compile un APK release (arm64) à chaque push et
+le publie dans la pre-release `apk-latest` du dépôt, téléchargeable depuis le téléphone.
+Le script `scripts/apply-signing.js` permet de signer avec votre propre keystore si les secrets
+`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`, `ANDROID_KEY_ALIAS` et
+`ANDROID_KEY_PASSWORD` sont définis dans le dépôt.
+
 ## Lancer
 
 ```bash
@@ -45,11 +53,13 @@ src/services/                 adaptateurs natifs des « ports » définis dans @
 ### Modèles
 
 - **Visages / expressions** : ML Kit embarque ses modèles, rien à télécharger.
-- **Identité (regroupement par personne)** : par défaut, embedding de repli calculé sur les
-  pixels du visage (rapide mais approximatif). Pour une reconnaissance fiable, fournissez un
-  modèle ONNX type MobileFaceNet / ArcFace (entrée `1×3×112×112`, normalisation
-  `(x − 127.5) / 128`) : renseignez `FACE_MODEL_URL` dans `src/config.ts`, il sera téléchargé
-  une fois dans le dossier documents. Le seuil de regroupement s'adapte à l'embedder.
+- **Identité (regroupement par personne)** : MobileFaceNet `w600k_mbf.onnx` (pack insightface
+  buffalo_sc, 13,6 Mo, entrée `1×3×112×112` RGB, normalisation `(x − 127.5) / 127.5`, sortie 512).
+  Le workflow `publish-model.yml` le publie comme asset de la release `models-v1` de ce dépôt ;
+  l'application le télécharge au premier lancement de l'assistant dans le dossier documents et
+  vérifie son MD5. Sans réseau, repli sur un embedding par pixels (approximatif) avec un seuil
+  de regroupement adapté. Licence insightface : usage non commercial. Pour changer de modèle,
+  éditez `src/config.ts`.
 - **Légendes** : au choix dans l'assistant, gabarits (instantané, hors ligne) ou LLM local
   (Qwen 3 0.6B quantisé, ~600 Mo téléchargés une fois par `react-native-executorch`, puis
   inférence sur l'appareil). Le prompt est construit par `buildCaptionPrompt` dans le cœur.

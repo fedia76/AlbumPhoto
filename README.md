@@ -27,7 +27,8 @@ albumphoto/
 **Assistant IA locale** (aucune donnée ne quitte l'appareil)
 1. **Parcours** des photos de l'appareil (les N plus récentes).
 2. **Détection des visages** (Google ML Kit, sur l'appareil) puis **regroupement par personne**
-   (embeddings + clustering agglomératif ; modèle ONNX optionnel, repli sans modèle).
+   (embeddings MobileFaceNet via ONNX Runtime, téléchargé une fois depuis la release
+   `models-v1` du dépôt ; repli sans modèle si hors ligne).
 3. **Choix des personnes** par l'utilisateur, avec prénoms.
 4. **Scoring** des photos : netteté (variance du laplacien), exposition, contraste, couleurs,
    présence des personnes choisies, yeux ouverts, sourires, composition ; déduplication des
@@ -38,7 +39,20 @@ albumphoto/
 6. **Assemblage** de l'album : couverture, chapitres par événement (écart temporel), rythme de
    pages 1 / 2 / 3 / 4 photos selon l'orientation, légendes dans les zones texte.
 
-## Démarrer
+## Installer l'APK Android sans ordinateur
+
+À chaque push, le workflow [`Android APK`](.github/workflows/android-apk.yml) compile
+l'application et publie l'APK dans la pre-release **`apk-latest`** du dépôt :
+
+1. Sur le téléphone, ouvrez `https://github.com/fedia76/AlbumPhoto/releases/tag/apk-latest`.
+2. Téléchargez le fichier `AlbumPhoto-<commit>.apk`.
+3. Autorisez l'installation d'applications inconnues pour le navigateur, puis ouvrez l'APK.
+
+L'APK est signé avec la clé de debug d'Expo (mises à jour possibles d'un build à l'autre,
+mais pas de publication sur le Play Store sans vos propres secrets de signature, voir le
+workflow). Le suivi des builds se fait dans l'onglet *Actions* du dépôt.
+
+## Démarrer (avec un ordinateur)
 
 Prérequis : Node 20+, et pour l'app mobile un environnement Expo (Android Studio / Xcode).
 Les modules natifs (ML Kit, ONNX Runtime, ExecuTorch) imposent un **development build**

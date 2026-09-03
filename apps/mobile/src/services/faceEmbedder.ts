@@ -9,7 +9,7 @@ import {
   type PixelReader,
   type SourcePhoto,
 } from '@albumphoto/core';
-import { ANALYSIS_THUMBNAIL, FACE_MODEL_FILENAME, FACE_MODEL_INPUT_SIZE, FACE_MODEL_URL } from '../config';
+import { ANALYSIS_THUMBNAIL, FACE_MODEL_CLUSTER_THRESHOLD, FACE_MODEL_FILENAME, FACE_MODEL_INPUT_SIZE, FACE_MODEL_MD5, FACE_MODEL_URL } from '../config';
 import { resolveFileUri } from './fileUri';
 import { decodeJpegBase64, renderJpegBase64 } from './pixels';
 
@@ -39,30 +39,50 @@ export function faceModelFile(): File {
   return new File(modelsDir(), FACE_MODEL_FILENAME);
 }
 
-/** Télécharge le modèle ONNX s'il est configuré et absent. Renvoie `true` s'il est disponible. */
+function modelIsValid(file: File): boolean {
+  if (!file.exists) return false;
+  const md5 = file.md5;
+  // Sans MD5 disponible (rare), on fait confiance à la taille non nulle.
+  return md5 ? md5.toLowerCase() === FACE_MODEL_MD5 : file.size > 0;
+}
+
+/**
+ * Télécharge le modèle ONNX s'il est configuré et absent (ou corrompu).
+ * Renvoie `true` si un modèle valide est disponible. Ne lève jamais : sans
+ * réseau, l'application se rabat sur l'embedding par pixels.
+ */
 export async function ensureFaceModel(onProgress?: (p: number) => void): Promise<boolean> {
   const file = faceModelFile();
-  if (file.exists) return true;
+  if (modelIsValid(file)) return true;
   if (!FACE_MODEL_URL) return false;
-  modelsDir().create({ intermediates: true, idempotent: true });
-  onProgress?.(0);
-  await File.downloadFileAsync(FACE_MODEL_URL, file, { idempotent: true });
-  onProgress?.(1);
-  return file.exists;
+  try {
+    if (file.exists) file.delete();
+    modelsDir().create({ intermediates: true, idempotent: true });
+    onProgress?.(0);
+    await File.downloadFileAsync(FACE_MODEL_URL, file, { idempotent: true });
+    onProgress?.(1);
+    if (modelIsValid(file)) return true;
+    console.warn('Modèle de visage téléchargé mais invalide (MD5), suppression');
+    if (file.exists) file.delete();
+    return false;
+  } catch (e) {
+    console.warn('Téléchargement du modèle de visage impossible', e);
+    return false;
+  }
 }
 
 /**
  * Embedding par réseau de neurones (ONNX Runtime, sur l'appareil).
- * Contrat du modèle : entrée `1×3×S×S` float32 normalisée (x − 127.5) / 128, sortie `1×D`.
+ * Contrat du modèle : entrée `1×3×S×S` float32 RGB normalisée (x − 127.5) / 127.5, sortie `1×D`.
  */
 export class OnnxFaceEmbedder implements EmbedderWithThreshold {
   readonly name = 'onnx-mobilefacenet';
-  readonly clusterThreshold = 0.6;
+  readonly clusterThreshold = FACE_MODEL_CLUSTER_THRESHOLD;
   private session?: InferenceSession;
 
   static async createIfAvailable(): Promise<OnnxFaceEmbedder | null> {
     const file = faceModelFile();
-    if (!file.exists) return null;
+    if (!modelIsValid(file)) return null;
     const e = new OnnxFaceEmbedder();
     e.session = await InferenceSession.create(file.uri.replace(/^file:\/\//, ''));
     return e;
@@ -84,9 +104,9 @@ export class OnnxFaceEmbedder implements EmbedderWithThreshold {
       const img = decodeJpegBase64(base64);
       const input = new Float32Array(3 * S * S);
       for (let i = 0; i < S * S; i++) {
-        input[i] = (img.data[i * 4]! - 127.5) / 128;
-        input[S * S + i] = (img.data[i * 4 + 1]! - 127.5) / 128;
-        input[2 * S * S + i] = (img.data[i * 4 + 2]! - 127.5) / 128;
+        input[i] = (img.data[i * 4]! - 127.5) / 127.5;
+        input[S * S + i] = (img.data[i * 4 + 1]! - 127.5) / 127.5;
+        input[2 * S * S + i] = (img.data[i * 4 + 2]! - 127.5) / 127.5;
       }
       const inputName = session.inputNames[0]!;
       const result = await session.run({ [inputName]: new Tensor('float32', input, [1, 3, S, S]) });
@@ -98,9 +118,10 @@ export class OnnxFaceEmbedder implements EmbedderWithThreshold {
   }
 }
 
-/** Choisit le meilleur embedder disponible. */
-export async function createFaceEmbedder(pixels: PixelReader): Promise<EmbedderWithThreshold> {
+/** Choisit le meilleur embedder disponible (télécharge le modèle si besoin). */
+export async function createFaceEmbedder(pixels: PixelReader, onModelDownload?: (p: number) => void): Promise<EmbedderWithThreshold> {
   try {
+    await ensureFaceModel(onModelDownload);
     const onnx = await OnnxFaceEmbedder.createIfAvailable();
     if (onnx) return onnx;
   } catch (e) {

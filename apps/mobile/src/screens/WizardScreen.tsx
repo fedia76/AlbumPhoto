@@ -68,7 +68,12 @@ export function WizardScreen() {
       const abort = new AbortController();
       abortRef.current = abort;
       setProgress({ label: 'Préparation des modèles…', value: 0 });
-      const adapters = await createAdapters({ locale: LOCALE, captionEngine: engine, onModelDownload: (p) => setProgress({ label: `Téléchargement du modèle de légendes… ${Math.round(p * 100)} %`, value: p }) });
+      const adapters = await createAdapters({
+        locale: LOCALE,
+        captionEngine: engine,
+        onFaceModelDownload: (p) => setProgress({ label: p < 1 ? 'Téléchargement du modèle de reconnaissance des visages (14 Mo)…' : 'Modèle de reconnaissance prêt.', value: p }),
+        onModelDownload: (p) => setProgress({ label: `Téléchargement du modèle de légendes… ${Math.round(p * 100)} %`, value: p }),
+      });
       adaptersRef.current = adapters;
       const result = await scanPhotos(adapters, {
         limit: scanLimit,

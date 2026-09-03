@@ -12,9 +12,16 @@ export interface AppAdapters extends PipelineAdapters {
 }
 
 /** Assemble les adaptateurs natifs pour le pipeline IA du cœur. */
-export async function createAdapters(opts: { locale: string; captionEngine: CaptionEngine; onModelDownload?: (p: number) => void }): Promise<AppAdapters> {
+export async function createAdapters(opts: {
+  locale: string;
+  captionEngine: CaptionEngine;
+  /** Progression du téléchargement du LLM de légendes (0..1). */
+  onModelDownload?: (p: number) => void;
+  /** Progression du téléchargement du modèle de visage (0..1). */
+  onFaceModelDownload?: (p: number) => void;
+}): Promise<AppAdapters> {
   const pixels = new ManipulatorPixelReader();
-  const embedder = await createFaceEmbedder(pixels);
+  const embedder = await createFaceEmbedder(pixels, opts.onFaceModelDownload);
   return {
     source: new DevicePhotoSource(),
     pixels,

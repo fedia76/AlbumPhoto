@@ -1,0 +1,114 @@
+name: Android APK
+
+# Compile l'application mobile en APK (release, arm64) et la publie :
+#  - comme artefact du run (zip, nécessite d'être connecté à GitHub) ;
+#  - comme asset de la pre-release « apk-latest », téléchargeable depuis un téléphone.
+#
+# Signature : par défaut la clé de debug générée par Expo (installable, mises à
+# jour possibles d'un build à l'autre, mais pas publiable sur le Play Store).
+# Pour signer avec votre propre clé, définissez les secrets ANDROID_KEYSTORE_BASE64,
+# ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS et ANDROID_KEY_PASSWORD.
+
+on:
+  push:
+    branches: ['**']
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      EXPO_NO_TELEMETRY: '1'
+      CI: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Installer les dépendances
+        run: npm ci
+
+      - name: Tests et types
+        run: |
+          npm test
+          npm run typecheck
+
+      - name: Générer le projet Android (expo prebuild)
+        working-directory: apps/mobile
+        run: npx expo prebuild --platform android --no-install --clean
+
+      - name: Régler Gradle pour le runner
+        working-directory: apps/mobile/android
+        run: |
+          sed -i 's/^org.gradle.jvmargs=.*/org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=1g/' gradle.properties
+          sed -i 's/^reactNativeArchitectures=.*/reactNativeArchitectures=arm64-v8a/' gradle.properties
+          chmod +x gradlew
+
+      - name: Signature personnalisée (si secrets présents)
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+          echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+          node apps/mobile/scripts/apply-signing.js
+
+      - name: Compiler l'APK release
+        working-directory: apps/mobile/android
+        run: ./gradlew :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Renommer l'APK
+        id: apk
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          NAME="AlbumPhoto-${SHORT_SHA}.apk"
+          cp apps/mobile/android/app/build/outputs/apk/release/app-release.apk "$NAME"
+          ls -la "$NAME"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.apk.outputs.name }}
+          path: ${{ steps.apk.outputs.name }}
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publier la pre-release apk-latest
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          APK: ${{ steps.apk.outputs.name }}
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+          DATE="$(date -u +'%Y-%m-%d %H:%M UTC')"
+          gh release delete apk-latest --cleanup-tag --yes || true
+          gh release create apk-latest "$APK" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "AlbumPhoto APK — $DATE" \
+            --notes "Build automatique de la branche \`$BRANCH\` (commit ${GITHUB_SHA::7}). Signé avec la clé de debug : autorisez l'installation d'applications inconnues sur le téléphone, puis ouvrez l'APK. Architecture arm64-v8a."
+          echo "APK publié : https://github.com/$GH_REPO/releases/tag/apk-latest" >> "$GITHUB_STEP_SUMMARY"
