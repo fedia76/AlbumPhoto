@@ -74,6 +74,12 @@ describe('captions', () => {
   it('sanitises LLM output', () => {
     expect(sanitizeCaption('Légende : « Un grand moment »\nExplication…')).toBe('Un grand moment');
     expect(sanitizeCaption('  "Hello world"  ')).toBe('Hello world');
+    // Les amorces bavardes des modèles instruits ne sont pas la légende.
+    expect(sanitizeCaption('Bien sûr !\nQuentin et Clément, inséparables.')).toBe('Quentin et Clément, inséparables.');
+    expect(sanitizeCaption('Voici la légende :\n- Le goûter, sérieusement.')).toBe('Le goûter, sérieusement.');
+    expect(sanitizeCaption('1. Un après-midi tranquille')).toBe('Un après-midi tranquille');
+    // Rien d'exploitable : on rend la première ligne plutôt que rien.
+    expect(sanitizeCaption('Bien sûr !')).toBe('Bien sûr !');
     const long = sanitizeCaption('a'.repeat(50) + ' ' + 'b'.repeat(50), 60);
     expect(long.length).toBeLessThanOrEqual(61);
     expect(long.endsWith('…')).toBe(true);
@@ -83,6 +89,10 @@ describe('captions', () => {
     const { system, user } = buildVisionCaptionPrompt({ context: ctx, style: 'family' });
     expect(system).toMatch(/Tu vois la photo/);
     expect(system).toMatch(/90 caractères maximum/);
+    // Le ton est montré, pas seulement décrit : un petit modèle imite mieux
+    // qu'il n'obéit à un adjectif.
+    expect(system).toMatch(/Le goûter, très sérieusement/);
+    expect(buildVisionCaptionPrompt({ context: ctx, style: 'poetic' }).system).toMatch(/s'attarde/);
     // Le modèle voit le contenu : lui répéter les étiquettes n'apporte rien et
     // l'induit en erreur quand ML Kit se trompe.
     expect(user).not.toMatch(/plage/i);
@@ -115,8 +125,11 @@ describe('captions', () => {
     expect(hasEnoughText('<think>' + 'a'.repeat(200))).toBe(false);
     expect(hasEnoughText('Un grand moment')).toBe(false);
     // Une première ligne complète suffit : la suite n'est que digression.
-    expect(hasEnoughText('Un grand moment\nExplication…')).toBe(true);
-    expect(hasEnoughText('<think>Hmm</think>\nUn grand moment\nEt encore')).toBe(true);
+    expect(hasEnoughText('Un grand moment de complicité\nExplication…')).toBe(true);
+    expect(hasEnoughText('<think>Hmm</think>\nUn grand moment de complicité\nEt encore')).toBe(true);
+    // Mais une première ligne trop courte est un préambule, pas une légende :
+    // s'arrêter là revenait à garder « Bien sûr ! » et à jeter la suite.
+    expect(hasEnoughText('Bien sûr !\nUn grand moment')).toBe(false);
     // Un modèle qui part en boucle est coupé sur la longueur.
     expect(hasEnoughText('a'.repeat(600), 90)).toBe(true);
     expect(hasEnoughText('<think>' + 'a'.repeat(1200))).toBe(true);
