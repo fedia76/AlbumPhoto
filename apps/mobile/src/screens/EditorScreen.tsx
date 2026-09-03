@@ -70,15 +70,16 @@ export function EditorScreen({ albumId }: { albumId: string }) {
    * sous-titre, qui ne décrivent aucune photo.
    */
   const captionPhotos = useMemo<Photo[]>(() => {
-    if (!album || !textFor || textFor.slotId === 'title' || textFor.slotId === 'subtitle') return [];
-    const current = album.pages.find((pg) => pg.texts[textFor.slotId] !== undefined || pg.id === page?.id);
-    const currentTemplate = current ? getTemplate(album, current.templateId) : undefined;
-    if (!current || !currentTemplate) return [];
-    return photoSlots(currentTemplate)
-      .map((slot) => current.photos[slot.id]?.photoId)
+    // La page en cours, et elle seule : chercher la page par le nom de la zone
+    // ramenait toujours la première, « c1 » étant le nom de *toutes* les zones
+    // de légende.
+    if (!album || !page || !template || !textFor) return [];
+    if (textFor.slotId === 'title' || textFor.slotId === 'subtitle') return [];
+    return photoSlots(template)
+      .map((slot) => page.photos[slot.id]?.photoId)
       .map((photoId) => album.photos.find((ph) => ph.id === photoId))
       .filter((ph): ph is Photo => !!ph);
-  }, [album, page?.id, textFor]);
+  }, [album, page, template, textFor]);
 
   /** Change de page et amène le carrousel dessus. */
   const goToPage = useCallback(
@@ -356,7 +357,7 @@ const styles = StyleSheet.create({
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: spacing.lg },
   modalCard: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, gap: spacing.md },
   modalTitle: { fontSize: 17, fontWeight: '600', color: colors.text },
-  modalScroll: { maxHeight: 280 },
+  modalScroll: { maxHeight: 340 },
   modalInput: { minHeight: 44, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, fontSize: 16, color: colors.text, textAlignVertical: 'top' },
   overlay: { position: 'absolute', left: 0, top: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', alignItems: 'center', justifyContent: 'center' },
 });

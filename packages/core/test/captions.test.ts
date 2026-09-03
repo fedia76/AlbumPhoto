@@ -6,7 +6,9 @@ import {
   buildDescriptionPrompt,
   buildProposalsPrompt,
   buildVisionCaptionPrompt,
+  hasEnoughDescription,
   parseCaptionProposals,
+  sanitizeDescription,
   generateTemplateCaption,
   hasEnoughText,
   isStuckThinking,
@@ -133,6 +135,26 @@ describe('captions', () => {
     expect(user).toMatch(/plage/);
     const empty = buildDescriptionPrompt({ context: { ...ctx, faceCount: 0, labels: [] }, style: 'family' });
     expect(empty.user).toMatch(/found nobody/);
+  });
+
+  it('keeps a description whole, unlike a caption', () => {
+    const raw = "Bien sûr !\nTwo children play on a slide.\nThe boy wears a blue jacket.\nThe light is soft.";
+    // Toutes les phrases comptent : le rédacteur n'a que cela pour se
+    // représenter la photo. Une légende, elle, se serait arrêtée à la première.
+    expect(sanitizeDescription(raw)).toBe('Two children play on a slide. The boy wears a blue jacket. The light is soft.');
+    // Trop longue : coupure à la dernière phrase entière, sans points de suite.
+    const long = `${'A'.repeat(300)}. ${'B'.repeat(300)}. ${'C'.repeat(300)}.`;
+    const cut = sanitizeDescription(long);
+    expect(cut.endsWith('.')).toBe(true);
+    expect(cut.length).toBeLessThanOrEqual(700);
+    expect(cut).not.toContain('C');
+  });
+
+  it('lets a description run past the first line', () => {
+    // Une légende s'arrête à la première ligne complète ; une description non.
+    expect(hasEnoughText('Deux enfants jouent au toboggan\nEncore', 90)).toBe(true);
+    expect(hasEnoughDescription('Deux enfants jouent au toboggan\nEncore')).toBe(false);
+    expect(hasEnoughDescription('x'.repeat(900))).toBe(true);
   });
 
   it('strips thinking blocks, closed or still open', () => {

@@ -115,6 +115,71 @@ export function buildDescriptionPrompt(req?: CaptionRequest): { system: string; 
   return { system, user };
 }
 
+/** Amorces bavardes des modèles instruits, à ne pas prendre pour la légende. */
+const PREAMBLE = /^(bien s[ûu]r|voici|voil[àa]|d'accord|okay|ok|sure|certainly|here('s| is)|of course)\b/i;
+
+/** Nettoie une ligne : puce, numérotation, préfixe « Légende : », guillemets. */
+function cleanLine(line: string): string {
+  return line
+    .trim()
+    .replace(/^[-*•]\s+/, '')
+    .replace(/^\d+[.)]\s+/, '')
+    .replace(/^(légende|caption)\s*:\s*/i, '')
+    .replace(/^["'«“]+/, '')
+    .replace(/["'»”]+$/, '')
+    .trim();
+}
+
+/**
+ * Une ligne peut-elle servir de légende ? Les amorces (« Bien sûr ! »), les
+ * en-têtes (« Légende : ») et les lignes sans un mot sont écartées : un petit
+ * modèle en produit souvent avant d'écrire ce qu'on lui demande.
+ */
+function usableLine(line: string): boolean {
+  if (line.length < 3 || line.endsWith(':')) return false;
+  if (PREAMBLE.test(line)) return false;
+  return /\p{L}{2,}/u.test(line);
+}
+
+/** Longueur maximale d'une description, avant coupure à la phrase. */
+const DESCRIPTION_LIMIT = 700;
+/**
+ * Caractères visibles au-delà desquels une description est jugée complète. Une
+ * description tient en deux ou trois phrases ; passé cela le modèle brode.
+ */
+const DESCRIPTION_BUDGET = 900;
+
+/**
+ * Le modèle en a-t-il assez dit sur la photo ? Contrairement à une légende, une
+ * description court sur plusieurs phrases et parfois plusieurs lignes :
+ * s'arrêter au premier retour à la ligne la mutilerait.
+ */
+export function hasEnoughDescription(raw: string): boolean {
+  if (raw.length >= RAW_BUDGET) return true;
+  return stripThinking(raw).length >= DESCRIPTION_BUDGET;
+}
+
+/**
+ * Nettoie une description : amorces retirées, lignes réunies, coupure à la
+ * dernière phrase complète. À la différence d'une légende, tout le texte
+ * compte — le rédacteur n'a que cela pour se représenter la photo.
+ */
+export function sanitizeDescription(raw: string, maxLength = DESCRIPTION_LIMIT): string {
+  const lines = stripThinking(raw)
+    .split('\n')
+    .map(cleanLine)
+    .filter((line) => line.length > 0 && !PREAMBLE.test(line) && !line.endsWith(':'));
+  const text = lines.join(' ').replace(/\s+/g, ' ').trim();
+  if (text.length <= maxLength) return text;
+  // Couper au milieu d'une phrase donnerait au rédacteur une image tronquée ;
+  // mieux vaut rendre une phrase de moins mais entière.
+  const cut = text.slice(0, maxLength);
+  const lastStop = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '));
+  if (lastStop > maxLength * 0.4) return cut.slice(0, lastStop + 1);
+  const lastSpace = cut.lastIndexOf(' ');
+  return `${(lastSpace > 0 ? cut.slice(0, lastSpace) : cut).replace(/[,;:\s]+$/, '')}…`;
+}
+
 /** Nombre de propositions demandées par style. */
 export const PROPOSALS_PER_STYLE = 4;
 
@@ -263,32 +328,6 @@ export function hasEnoughText(raw: string, maxLength = DEFAULT_CAPTION_MAX_LENGT
 }
 
 /** Nettoie la sortie d'un LLM : guillemets, préfixes, coupures propres. */
-/** Amorces bavardes des modèles instruits, à ne pas prendre pour la légende. */
-const PREAMBLE = /^(bien s[ûu]r|voici|voil[àa]|d'accord|okay|ok|sure|certainly|here('s| is)|of course)\b/i;
-
-/** Nettoie une ligne : puce, numérotation, préfixe « Légende : », guillemets. */
-function cleanLine(line: string): string {
-  return line
-    .trim()
-    .replace(/^[-*•]\s+/, '')
-    .replace(/^\d+[.)]\s+/, '')
-    .replace(/^(légende|caption)\s*:\s*/i, '')
-    .replace(/^["'«“]+/, '')
-    .replace(/["'»”]+$/, '')
-    .trim();
-}
-
-/**
- * Une ligne peut-elle servir de légende ? Les amorces (« Bien sûr ! »), les
- * en-têtes (« Légende : ») et les lignes sans un mot sont écartées : un petit
- * modèle en produit souvent avant d'écrire ce qu'on lui demande.
- */
-function usableLine(line: string): boolean {
-  if (line.length < 3 || line.endsWith(':')) return false;
-  if (PREAMBLE.test(line)) return false;
-  return /\p{L}{2,}/u.test(line);
-}
-
 export function sanitizeCaption(raw: string, maxLength = DEFAULT_CAPTION_MAX_LENGTH): string {
   const lines = raw.trim().split('\n').map(cleanLine).filter(Boolean);
   // La première ligne exploitable, à défaut la première tout court : mieux vaut

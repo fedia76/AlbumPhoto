@@ -5,9 +5,11 @@ import {
   buildCaptionPrompt,
   buildDescriptionPrompt,
   buildVisionCaptionPrompt,
+  hasEnoughDescription,
   hasEnoughText,
   isStuckThinking,
   sanitizeCaption,
+  sanitizeDescription,
   stripThinking,
   type CaptionDraft,
   type CaptionGenerator,
@@ -73,9 +75,6 @@ const VISION_LIMITS: GenerationLimits = { firstToken: 120_000, silence: 20_000, 
  * description est toute la matière du rédacteur.
  */
 const VISION_IMAGE_SIZE = 768;
-
-/** Une description tient en une ou deux phrases ; au-delà c'est du bavardage. */
-const DESCRIPTION_MAX_LENGTH = 300;
 
 /**
  * Moteurs de légendes proposés dans l'assistant.
@@ -432,7 +431,7 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
       : mediaPath
         ? buildVisionCaptionPrompt(req)
         : buildCaptionPrompt(req);
-    const maxLength = describing ? DESCRIPTION_MAX_LENGTH : req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
+    const maxLength = req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
     const limits = this.model.limits;
     let raw = '';
     let lastToken = 0;
@@ -451,7 +450,7 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     this.sink = (token) => {
       raw += token;
       lastToken = Date.now();
-      if (hasEnoughText(raw, maxLength)) interrupt(ENOUGH);
+      if (describing ? hasEnoughDescription(raw) : hasEnoughText(raw, maxLength)) interrupt(ENOUGH);
       else if (raw.length >= THINKING_BUDGET && isStuckThinking(raw)) interrupt('réflexion sans fin');
     };
     const heartbeat = setInterval(() => {
@@ -492,7 +491,7 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
           'warn',
           `Légende ${index} : le moteur n'a pas répondu en ${seconds(elapsed)} (${raw.length} car. reçus, interruption : ${stopped ?? 'aucune'}).`,
         );
-        return sanitizeCaption(stripThinking(raw), maxLength);
+        return describing ? sanitizeDescription(raw) : sanitizeCaption(stripThinking(raw), maxLength);
       }
       const thinking = isStuckThinking(answer.value);
       log(
@@ -501,7 +500,7 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
           stopped ? ` — coupée (${stopped})` : ''
         }${thinking ? " — le modèle n'est jamais sorti de sa réflexion, rien d'exploitable" : ''}`,
       );
-      return sanitizeCaption(stripThinking(answer.value), maxLength);
+      return describing ? sanitizeDescription(answer.value) : sanitizeCaption(stripThinking(answer.value), maxLength);
     } finally {
       clearInterval(heartbeat);
       signal?.removeEventListener('abort', onAbort);
