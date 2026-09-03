@@ -10,7 +10,8 @@
   "scripts": {
     "test": "npm run test --workspace=@albumphoto/core",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "lint": "npm run lint --workspaces --if-present"
+    "lint": "npm run lint --workspaces --if-present",
+    "postinstall": "node scripts/patch-native-deps.js"
   },
   "engines": {
     "node": ">=20"
