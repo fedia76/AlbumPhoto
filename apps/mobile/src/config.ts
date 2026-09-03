@@ -23,5 +23,9 @@ export const FACE_MODEL_CLUSTER_THRESHOLD = 0.5;
 export const ANALYSIS_THUMBNAIL = 256;
 /** Taille des vignettes stockées dans le bundle d'album. */
 export const BUNDLE_THUMBNAIL = 640;
-/** Nombre max de photos parcourues par l'assistant (protège la batterie). */
+/** Nombre de photos parcourues par défaut (protège la batterie). */
 export const DEFAULT_SCAN_LIMIT = 600;
+/** Raccourcis proposés dans l'assistant, en plus de la saisie libre. */
+export const SCAN_LIMIT_PRESETS = [200, 600, 1500] as const;
+/** Borne haute de la saisie libre : au-delà, l'analyse deviendrait interminable. */
+export const MAX_SCAN_LIMIT = 20_000;

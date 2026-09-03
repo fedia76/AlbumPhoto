@@ -13,7 +13,7 @@ import {
   type PersonCluster,
   type PhotoAnalysis,
 } from '@albumphoto/core';
-import { APP_GENERATOR, DEFAULT_SCAN_LIMIT } from '../config';
+import { APP_GENERATOR, DEFAULT_SCAN_LIMIT, MAX_SCAN_LIMIT, SCAN_LIMIT_PRESETS } from '../config';
 import { useNavigation } from '../navigation';
 import { createAdapters, ensureMediaPermission, type AppAdapters } from '../services';
 import type { CaptionEngine } from '../services/captioner';
@@ -46,7 +46,8 @@ export function WizardScreen() {
   const [step, setStep] = useState<Step>('intro');
   const [title, setTitle] = useState('Mon album');
   const [subtitle, setSubtitle] = useState('');
-  const [scanLimit, setScanLimit] = useState(DEFAULT_SCAN_LIMIT);
+  // Saisie libre : le texte fait foi pendant la frappe, le nombre en est dérivé.
+  const [scanLimitText, setScanLimitText] = useState(String(DEFAULT_SCAN_LIMIT));
   const [engine, setEngine] = useState<CaptionEngine>('template');
   const [style, setStyle] = useState<CaptionStyle>('family');
   const [targetCount, setTargetCount] = useState(24);
@@ -62,6 +63,12 @@ export function WizardScreen() {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  /** Nombre de photos à parcourir, borné, ou 0 si la saisie est vide. */
+  const scanLimit = useMemo(() => {
+    const parsed = Number.parseInt(scanLimitText.replace(/[^0-9]/g, ''), 10);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.min(parsed, MAX_SCAN_LIMIT) : 0;
+  }, [scanLimitText]);
 
   /**
    * Sélection des photos, recalculée quand les personnes ou la cible changent.
@@ -311,16 +318,33 @@ export function WizardScreen() {
             <TextInput value={title} onChangeText={setTitle} style={styles.input} />
             <Text style={styles.label}>Photos à parcourir (les plus récentes)</Text>
             <View style={styles.chips}>
-              {[200, 600, 1500].map((n) => (
-                <Chip key={n} label={`${n}`} selected={scanLimit === n} onPress={() => setScanLimit(n)} />
+              {SCAN_LIMIT_PRESETS.map((n) => (
+                <Chip key={n} label={`${n}`} selected={scanLimit === n} onPress={() => setScanLimitText(String(n))} />
               ))}
+            </View>
+            <View style={styles.countRow}>
+              <TextInput
+                value={scanLimitText}
+                onChangeText={(text) => setScanLimitText(text.replace(/[^0-9]/g, '').slice(0, 5))}
+                keyboardType="number-pad"
+                style={[styles.input, styles.countInput]}
+                placeholder={String(DEFAULT_SCAN_LIMIT)}
+                placeholderTextColor={colors.muted}
+                selectTextOnFocus
+                maxLength={5}
+              />
+              <Text style={styles.countHint}>
+                {scanLimit > 0
+                  ? `photos, de la plus récente à la plus ancienne (max ${MAX_SCAN_LIMIT}).`
+                  : 'Saisissez un nombre de photos à analyser.'}
+              </Text>
             </View>
             <Text style={styles.label}>Moteur de légendes</Text>
             <View style={styles.chips}>
               <Chip label="Gabarits (instantané)" selected={engine === 'template'} onPress={() => setEngine('template')} />
               <Chip label="LLM local (téléchargement ~600 Mo)" selected={engine === 'llm'} onPress={() => setEngine('llm')} />
             </View>
-            <Button title="Parcourir mes photos" onPress={() => void startScan()} />
+            <Button title="Parcourir mes photos" onPress={() => void startScan()} disabled={scanLimit <= 0} />
           </>
         )}
 
@@ -401,6 +425,9 @@ const styles = StyleSheet.create({
   label: { fontSize: 13, color: colors.muted, marginTop: spacing.sm },
   input: { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.border, borderRadius: radius.md, padding: spacing.md, fontSize: 16, color: colors.text },
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  countRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  countInput: { width: 96, textAlign: 'center' },
+  countHint: { flex: 1, fontSize: 13, color: colors.muted, lineHeight: 18 },
   hint: { color: colors.muted, fontSize: 13, textAlign: 'center' },
   people: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, justifyContent: 'center' },
   targetRow: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, gap: spacing.sm },
