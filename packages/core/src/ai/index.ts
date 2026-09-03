@@ -9,3 +9,4 @@ export * from './builder';
 export * from './pipeline';
 export * from './embedding';
 export * from './labels';
+export * from './explain';

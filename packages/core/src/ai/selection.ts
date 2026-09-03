@@ -22,6 +22,33 @@ export interface SelectedPhoto {
   score: PhotoScore;
 }
 
+/** Pourquoi une photo n'a pas été retenue. */
+export type RejectionReason =
+  /** Trop floue pour être imprimée. */
+  | 'sharpness'
+  /** Note globale sous le seuil. */
+  | 'score'
+  /** Quasi identique à une photo déjà retenue (rafale). */
+  | 'duplicate'
+  /** Trop de photos déjà prises du même moment. */
+  | 'moment'
+  /** L'album était déjà complet. */
+  | 'quota';
+
+export interface RejectedPhoto {
+  analysis: PhotoAnalysis;
+  score: PhotoScore;
+  reason: RejectionReason;
+  /** Pour un doublon : la photo retenue à laquelle elle ressemble. */
+  duplicateOf?: string;
+}
+
+export interface SelectionResult {
+  selected: SelectedPhoto[];
+  /** Toutes les photos écartées, avec le motif, triées par note décroissante. */
+  rejected: RejectedPhoto[];
+}
+
 const takenTime = (a: PhotoAnalysis): number => (a.photo.takenAt ? Date.parse(a.photo.takenAt) : NaN);
 
 /**
@@ -32,7 +59,7 @@ export function selectPhotos(
   analyses: PhotoAnalysis[],
   scores: PhotoScore[],
   opts: SelectionOptions,
-): SelectedPhoto[] {
+): SelectionResult {
   const dupThreshold = opts.duplicateThreshold ?? 10;
   const minScore = opts.minScore ?? 0.25;
   const minSharpness = opts.minSharpness ?? 0.08;
@@ -44,25 +71,48 @@ export function selectPhotos(
   const perMoment = new Map<number, number>();
   const ranked = [...scores].sort((a, b) => b.score - a.score);
   const chosen: SelectedPhoto[] = [];
+  const rejected: RejectedPhoto[] = [];
 
-  for (const s of ranked) {
-    if (chosen.length >= opts.targetCount) break;
-    if (s.score < minScore) continue;
-    const a = byId.get(s.photoId);
-    if (!a) continue;
-    if (a.quality.sharpness < minSharpness) continue;
-    if (chosen.some((c) => isNearDuplicate(c.analysis.hash, a.hash, dupThreshold))) continue;
-    const moment = momentOf.get(a.photo.id);
-    if (moment !== undefined) {
-      const n = perMoment.get(moment) ?? 0;
-      if (n >= maxPerMoment) continue;
-      perMoment.set(moment, n + 1);
+  for (const score of ranked) {
+    const analysis = byId.get(score.photoId);
+    if (!analysis) continue;
+    const reject = (reason: RejectionReason, duplicateOf?: string) => {
+      rejected.push(duplicateOf ? { analysis, score, reason, duplicateOf } : { analysis, score, reason });
+    };
+
+    // Les motifs propres à la photo sont testés d'abord : dire « trop floue »
+    // est plus utile que « album complet », même si les deux sont vrais.
+    if (analysis.quality.sharpness < minSharpness) {
+      reject('sharpness');
+      continue;
     }
-    chosen.push({ analysis: a, score: s });
+    if (score.score < minScore) {
+      reject('score');
+      continue;
+    }
+    if (chosen.length >= opts.targetCount) {
+      reject('quota');
+      continue;
+    }
+    const duplicate = chosen.find((c) => isNearDuplicate(c.analysis.hash, analysis.hash, dupThreshold));
+    if (duplicate) {
+      reject('duplicate', duplicate.analysis.photo.id);
+      continue;
+    }
+    const moment = momentOf.get(analysis.photo.id);
+    if (moment !== undefined) {
+      const taken = perMoment.get(moment) ?? 0;
+      if (taken >= maxPerMoment) {
+        reject('moment');
+        continue;
+      }
+      perMoment.set(moment, taken + 1);
+    }
+    chosen.push({ analysis, score });
   }
 
   // Ordre chronologique pour la narration ; les photos sans date à la fin.
-  return chosen.sort((x, y) => {
+  chosen.sort((x, y) => {
     const tx = takenTime(x.analysis);
     const ty = takenTime(y.analysis);
     if (Number.isNaN(tx) && Number.isNaN(ty)) return 0;
@@ -70,6 +120,7 @@ export function selectPhotos(
     if (Number.isNaN(ty)) return -1;
     return tx - ty;
   });
+  return { selected: chosen, rejected };
 }
 
 /**

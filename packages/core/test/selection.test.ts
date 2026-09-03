@@ -17,14 +17,20 @@ describe('selection', () => {
     ];
     const byPhoto = new Map(photos.map((p) => [p.photo.id, ['x']]));
     const scores = scorePhotos(photos, { selectedPeople: new Set(['x']), peopleByPhoto: byPhoto });
-    const sel = selectPhotos(photos, scores, { targetCount: 10, maxPerMoment: 2 });
+    const { selected: sel, rejected } = selectPhotos(photos, scores, { targetCount: 10, maxPerMoment: 2 });
     const ids = sel.map((s) => s.analysis.photo.id);
+    const reasonOf = (id: string) => rejected.find((r) => r.analysis.photo.id === id)?.reason;
     expect(ids).not.toContain('p1-dup');
     expect(ids.filter((i) => ['p1', 'p2', 'p3'].includes(i))).toHaveLength(2);
     expect(ids).toContain('p4');
     expect(ids[0]).toBe('old');
     expect(ids[ids.length - 1]).toBe('undated');
     expect(ids).not.toContain('bad');
+    // Chaque photo écartée porte son motif, base de l'écran de revue.
+    expect(reasonOf('p1-dup')).toBe('duplicate');
+    expect(rejected.find((r) => r.analysis.photo.id === 'p1-dup')?.duplicateOf).toBe('p1');
+    expect(reasonOf('bad')).toBe('sharpness');
+    expect(new Set([...ids, ...rejected.map((r) => r.analysis.photo.id)]).size).toBe(photos.length);
 
     const events = groupIntoEvents(sel, 6);
     expect(events).toHaveLength(3); // 13 juillet, 14 juillet, sans date
@@ -38,6 +44,10 @@ describe('selection', () => {
       analysis(`p${i}`, [face(0)], { takenAt: new Date(Date.UTC(2026, 0, 1 + i)).toISOString(), hash: (i * 2654435761 >>> 0).toString(16).padStart(16, '0') }),
     );
     const scores = scorePhotos(photos, { selectedPeople: new Set(), peopleByPhoto: new Map() });
-    expect(selectPhotos(photos, scores, { targetCount: 12 })).toHaveLength(12);
+    const { selected, rejected } = selectPhotos(photos, scores, { targetCount: 12 });
+    expect(selected).toHaveLength(12);
+    // Toute photo est classée : retenue, ou écartée avec un motif.
+    expect(rejected).toHaveLength(photos.length - 12);
+    expect(rejected.some((r) => r.reason === 'quota')).toBe(true);
   });
 });

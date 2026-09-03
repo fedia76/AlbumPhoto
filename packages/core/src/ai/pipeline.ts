@@ -4,8 +4,8 @@ import type { DetectedFace, PersonCluster, PhotoAnalysis, RgbaImage, SourcePhoto
 import { computeQuality, toGray } from './quality';
 import { dHash } from './phash';
 import { clusterFaces, peopleByPhoto, type ClusterOptions } from './clustering';
-import { scorePhotos, type ScoringWeights } from './scoring';
-import { groupIntoEvents, selectPhotos, type PhotoEvent, type SelectedPhoto } from './selection';
+import { scorePhotos, type PhotoScore, type ScoringWeights } from './scoring';
+import { groupIntoEvents, selectPhotos, type PhotoEvent, type RejectedPhoto, type SelectedPhoto } from './selection';
 import type { CaptionGenerator, CaptionContext } from './captions/types';
 import { timeOfDayFromIso } from './captions/context';
 import { buildAlbum, eventsToBuildInput } from './builder';
@@ -136,7 +136,14 @@ export function selectBestPhotos(
   analyses: PhotoAnalysis[],
   clusters: PersonCluster[],
   params: SelectionParams,
-): { selected: SelectedPhoto[]; events: PhotoEvent[]; byPhoto: Map<string, string[]> } {
+): {
+  selected: SelectedPhoto[];
+  /** Photos écartées et motif, pour expliquer la sélection à l'utilisateur. */
+  rejected: RejectedPhoto[];
+  events: PhotoEvent[];
+  byPhoto: Map<string, string[]>;
+  scores: PhotoScore[];
+} {
   const byPhoto = peopleByPhoto(clusters);
   const scores = scorePhotos(analyses, {
     selectedPeople: params.selectedPeople,
@@ -144,9 +151,9 @@ export function selectBestPhotos(
     weights: params.weights,
     allowScenery: params.allowScenery,
   });
-  const selected = selectPhotos(analyses, scores, { targetCount: params.targetCount });
+  const { selected, rejected } = selectPhotos(analyses, scores, { targetCount: params.targetCount });
   const events = groupIntoEvents(selected, params.eventGapHours, params.locale);
-  return { selected, events, byPhoto };
+  return { selected, rejected, events, byPhoto, scores };
 }
 
 export interface CaptionParams {
@@ -204,7 +211,8 @@ export async function generateCaptions(
       if (params.signal?.aborted) return captions;
       const context = captionContextFor(sel, byPhoto, params, event.title);
       try {
-        const text = await generator.generate({ context, style: params.style }, params.signal);
+        // `variant` fait tourner les tournures d'une photo à l'autre.
+        const text = await generator.generate({ context, style: params.style, variant: done }, params.signal);
         if (text) captions.set(sel.analysis.photo.id, text);
       } catch {
         // Légende manquante : la page restera sans texte.

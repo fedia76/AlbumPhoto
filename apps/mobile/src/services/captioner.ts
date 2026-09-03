@@ -10,6 +10,10 @@ import { log } from '../diagnostics/log';
 import { isExecutorchLinked } from './nativeAvailability';
 
 type ExecutorchModule = typeof import('react-native-executorch');
+type ResourceFetcherModule = typeof import('react-native-executorch-expo-resource-fetcher');
+
+/** `initExecutorch` n'est à appeler qu'une fois par session. */
+let resourceFetcherReady = false;
 
 /** Nom du modèle, en dur : le lire depuis le module chargerait sa partie native. */
 const LLM_MODEL_NAME = 'qwen3-0.6b-quantized';
@@ -26,6 +30,14 @@ function loadExecutorch(): ExecutorchModule {
   const mod = require('react-native-executorch') as ExecutorchModule;
   if (!mod.isAvailable) {
     throw new Error("Le runtime ExecuTorch n'est pas disponible sur cet appareil.");
+  }
+  if (!resourceFetcherReady) {
+    // Depuis la version 0.9, le téléchargement des modèles passe par un
+    // « resource fetcher » explicite. Sans lui, tout chargement de modèle
+    // échoue et l'application se rabat silencieusement sur les gabarits.
+    const { ExpoResourceFetcher } = require('react-native-executorch-expo-resource-fetcher') as ResourceFetcherModule;
+    mod.initExecutorch({ resourceFetcher: ExpoResourceFetcher });
+    resourceFetcherReady = true;
   }
   return mod;
 }
@@ -54,6 +66,8 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
   private llm?: LLMModule;
   private loading?: Promise<LLMModule>;
   private readonly fallback = new TemplateCaptionGenerator();
+  /** Renseigné dès le premier échec : inutile de retenter à chaque légende. */
+  private unavailable: string | null = null;
 
   constructor(private readonly onDownloadProgress?: (p: number) => void) {}
 
@@ -69,7 +83,13 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     return this.loading;
   }
 
+  /** Raison pour laquelle le LLM local n'a pas pu servir, le cas échéant. */
+  get fallbackReason(): string | null {
+    return this.unavailable;
+  }
+
   async generate(req: CaptionRequest, signal?: AbortSignal): Promise<string> {
+    if (this.unavailable !== null) return this.fallback.generate(req);
     try {
       const llm = await this.load();
       if (signal?.aborted) throw new Error('aborted');
@@ -89,7 +109,10 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
       if (text.length >= 3) return text;
     } catch (e) {
       this.loading = undefined;
-      log('warn', 'LLM local indisponible, repli sur les gabarits', e);
+      // Une seule trace : sans cela chaque photo relançait le chargement et
+      // remplissait le journal de la même pile d'appel.
+      this.unavailable = e instanceof Error ? e.message : String(e);
+      log('warn', 'LLM local indisponible, repli sur les gabarits pour tout l\'album', e);
     }
     return this.fallback.generate(req);
   }

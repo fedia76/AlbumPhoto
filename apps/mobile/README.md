@@ -66,7 +66,9 @@ src/services/faceThumbnails.ts vignettes de visage recadrées pour l'assistant
 src/components/…              gabarits, sélecteur de photos, carte personne, UI
 src/screens/HomeScreen.tsx    liste des albums
 src/screens/EditorScreen.tsx  éditeur : carrousel de pages, gabarits, placement, zoom, textes
-src/screens/WizardScreen.tsx  assistant IA : parcours → personnes (fusion possible) → style → génération
+src/screens/WizardScreen.tsx  assistant IA : parcours → personnes (fusion possible) → revue → style → génération
+src/components/SelectionReview.tsx  revue détaillée : photos retenues, écartées, et motifs
+src/services/photoThumbnails.ts     vignettes des photos de l'appareil, mises en cache
 src/screens/DiagnosticsScreen.tsx  état des modules natifs et journal partageable
 src/diagnostics/              journal disque, détection de plantage au démarrage, écran de secours
 src/services/                 adaptateurs natifs des « ports » définis dans @albumphoto/core
@@ -97,6 +99,10 @@ src/services/                 adaptateurs natifs des « ports » définis dans @
 - **Légendes** : au choix dans l'assistant, gabarits (instantané, hors ligne) ou LLM local
   (Qwen 3 0.6B quantisé, ~600 Mo téléchargés une fois par `react-native-executorch`, puis
   inférence sur l'appareil). Le prompt est construit par `buildCaptionPrompt` dans le cœur.
+  Depuis la version 0.9, `react-native-executorch` exige un « resource fetcher » explicite :
+  `initExecutorch({ resourceFetcher: ExpoResourceFetcher })` est appelé au premier chargement
+  du modèle (`src/services/captioner.ts`). Sans lui, tout téléchargement échoue et
+  l'application se rabat silencieusement sur les gabarits.
 
 ### Confidentialité
 

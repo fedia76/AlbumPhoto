@@ -81,7 +81,7 @@ describe('end-to-end pipeline (fake adapters)', () => {
       [clusters[1]!.id, 'Tom'],
     ]);
 
-    const { selected, events, byPhoto } = selectBestPhotos(analyses, clusters, { selectedPeople, targetCount: 8, locale: 'fr-FR' });
+    const { selected, rejected, events, byPhoto } = selectBestPhotos(analyses, clusters, { selectedPeople, targetCount: 8, locale: 'fr-FR' });
     const ids = selected.map((s) => s.analysis.photo.id);
     expect(ids.length).toBeLessThanOrEqual(8);
     expect(ids).not.toContain('d1-blurry');
@@ -89,6 +89,9 @@ describe('end-to-end pipeline (fake adapters)', () => {
     expect(ids.filter((i) => i.startsWith('d1-burst')).length).toBeLessThanOrEqual(2);
     expect(ids).toContain('d2-lea-tom');
     expect(events).toHaveLength(2);
+    // Toute photo analysée est soit retenue, soit écartée avec un motif.
+    expect(selected.length + rejected.length).toBe(analyses.length);
+    expect(rejected.find((r) => r.analysis.photo.id === 'd1-blurry')?.reason).toBe('sharpness');
     expect(events[0]!.title).toMatch(/août 2026/);
 
     const captions = await generateCaptions(a.captions, events, byPhoto, {

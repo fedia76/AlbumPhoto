@@ -23,8 +23,9 @@ import { log } from '../diagnostics/log';
 import { colors, radius, spacing } from '../theme';
 import { Button, Chip, Header, ProgressBar } from '../components/ui';
 import { PersonCard } from '../components/PersonCard';
+import { SelectionReview } from '../components/SelectionReview';
 
-type Step = 'intro' | 'scanning' | 'people' | 'style' | 'generating';
+type Step = 'intro' | 'scanning' | 'people' | 'review' | 'style' | 'generating';
 
 const STYLE_LABELS: Record<CaptionStyle, string> = {
   funny: 'Drôle',
@@ -61,6 +62,17 @@ export function WizardScreen() {
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  /**
+   * Sélection des photos, recalculée quand les personnes ou la cible changent.
+   * Elle n'est calculée qu'à partir de l'écran de revue : inutile d'occuper le
+   * fil pendant que l'utilisateur nomme les visages.
+   */
+  const selection = useMemo(() => {
+    if (step !== 'review' && step !== 'style' && step !== 'generating') return null;
+    if (analyses.length === 0) return null;
+    return selectBestPhotos(analyses, clusters, { selectedPeople: selected, targetCount, locale: LOCALE });
+  }, [analyses, clusters, selected, step, targetCount]);
 
   /** Nombre de photos distinctes par personne, recalculé seulement si besoin. */
   const photoCountByCluster = useMemo(
@@ -193,7 +205,8 @@ export function WizardScreen() {
       const abort = new AbortController();
       abortRef.current = abort;
       setProgress({ label: 'Sélection des meilleures photos…', value: 0.05 });
-      const { selected: chosen, events, byPhoto } = selectBestPhotos(analyses, clusters, { selectedPeople: selected, targetCount, locale: LOCALE });
+      // La sélection est celle que l'utilisateur vient d'examiner.
+      const { selected: chosen, events, byPhoto } = selection ?? { selected: [], events: [], byPhoto: new Map<string, string[]>() };
       if (chosen.length === 0) {
         Alert.alert('Aucune photo retenue', "Essayez avec d'autres personnes ou un parcours plus large.");
         setStep('style');
@@ -225,6 +238,14 @@ export function WizardScreen() {
         onProgress: (p) => setProgress({ label: `Copie des photos… ${p.done} / ${p.total}`, value: 0.6 + (0.4 * p.done) / Math.max(1, p.total) }),
       });
       await saveAlbum(album);
+      // Le repli sur les gabarits doit être visible, pas silencieux.
+      const reason = (adapters.captions as { fallbackReason?: string | null }).fallbackReason;
+      if (reason) {
+        Alert.alert(
+          'Légendes écrites sans le modèle',
+          `Le modèle de langage local n'a pas pu être utilisé :\n${reason}\n\nLes légendes viennent des gabarits intégrés.`,
+        );
+      }
       nav.replace({ name: 'editor', albumId: album.id });
     } catch (e) {
       fail(e);
@@ -235,6 +256,49 @@ export function WizardScreen() {
     abortRef.current?.abort();
     nav.back();
   };
+
+  // La revue occupe tout l'écran : sa liste est virtualisée, elle ne peut pas
+  // vivre dans le ScrollView des autres étapes.
+  if (step === 'review') {
+    return (
+      <SafeAreaView style={styles.container} edges={['top']}>
+        <Header
+          title="Photos retenues"
+          left={<Button title="Retour" variant="ghost" onPress={() => setStep('people')} />}
+        />
+        <View style={styles.targetRow}>
+          <Text style={styles.label}>Nombre de photos souhaité</Text>
+          <View style={styles.chips}>
+            {[12, 24, 36, 60].map((n) => (
+              <Chip key={n} label={`${n}`} selected={targetCount === n} onPress={() => setTargetCount(n)} />
+            ))}
+          </View>
+        </View>
+        <View style={{ flex: 1 }}>
+          {selection ? (
+            <SelectionReview
+              selected={selection.selected}
+              rejected={selection.rejected}
+              events={selection.events}
+              analysedCount={analyses.length}
+              peopleByPhoto={selection.byPhoto}
+              personNames={names}
+              selectedPeople={selected}
+              embedderName={adaptersRef.current?.embedder.name ?? 'inconnu'}
+              locale={LOCALE}
+            />
+          ) : null}
+        </View>
+        <View style={styles.footer}>
+          <Button
+            title="Continuer vers les légendes"
+            onPress={() => setStep('style')}
+            disabled={!selection || selection.selected.length === 0}
+          />
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -304,7 +368,7 @@ export function WizardScreen() {
             <Text style={styles.hint}>
               {analyses.length} photos analysées · {analyses.filter((a) => a.faces.length > 0).length} avec des visages
             </Text>
-            {!mergeMode ? <Button title="Continuer" onPress={() => setStep('style')} /> : null}
+            {!mergeMode ? <Button title="Voir la sélection de photos" onPress={() => setStep('review')} /> : null}
           </>
         )}
 
@@ -316,16 +380,13 @@ export function WizardScreen() {
                 <Chip key={s} label={STYLE_LABELS[s]} selected={style === s} onPress={() => setStyle(s)} />
               ))}
             </View>
-            <Text style={styles.label}>Nombre de photos souhaité</Text>
-            <View style={styles.chips}>
-              {[12, 24, 36, 60].map((n) => (
-                <Chip key={n} label={`${n}`} selected={targetCount === n} onPress={() => setTargetCount(n)} />
-              ))}
-            </View>
             <Text style={styles.label}>Sous-titre (optionnel)</Text>
             <TextInput value={subtitle} onChangeText={setSubtitle} style={styles.input} placeholder="Août 2026" placeholderTextColor={colors.muted} />
+            <Text style={styles.hint}>
+              {selection ? `${selection.selected.length} photos retenues sur ${analyses.length} analysées.` : ''}
+            </Text>
             <Button title="Générer l'album" onPress={() => void generate()} />
-            <Button title="Revenir aux personnes" variant="ghost" onPress={() => setStep('people')} />
+            <Button title="Revenir à la sélection" variant="ghost" onPress={() => setStep('review')} />
           </>
         )}
       </ScrollView>
@@ -342,4 +403,6 @@ const styles = StyleSheet.create({
   chips: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
   hint: { color: colors.muted, fontSize: 13, textAlign: 'center' },
   people: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.md, justifyContent: 'center' },
+  targetRow: { paddingHorizontal: spacing.lg, paddingTop: spacing.sm, gap: spacing.sm },
+  footer: { padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
 });

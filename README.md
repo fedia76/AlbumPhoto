@@ -33,10 +33,14 @@ albumphoto/
 4. **Scoring** des photos : netteté (variance du laplacien), exposition, contraste, couleurs,
    présence des personnes choisies, yeux ouverts, sourires, composition ; déduplication des
    rafales (dHash) et limitation par « moment ».
-5. **Légendes** dans le style choisi — drôle, formel, poétique, minimaliste, famille — par un
+5. **Revue de la sélection** : écran détaillé listant les photos retenues avec leur note et le
+   détail des quatre critères, et les photos écartées avec le motif (floue, quasi-doublon,
+   trop de photos du même moment, album complet).
+6. **Légendes** dans le style choisi — drôle, formel, poétique, minimaliste, famille — par un
    **LLM local** (react-native-executorch, Qwen 3 0.6B quantisé) avec repli sur un générateur
-   par gabarits, déterministe et instantané.
-6. **Assemblage** de l'album : couverture, chapitres par événement (écart temporel), rythme de
+   par gabarits dont les tournures dépendent du contexte (personnes, date, saison, moment de la
+   journée, contenu) et tournent d'une photo à l'autre.
+7. **Assemblage** de l'album : couverture, chapitres par événement (écart temporel), rythme de
    pages 1 / 2 / 3 / 4 photos selon l'orientation, légendes dans les zones texte.
 
 ## Installer l'APK Android sans ordinateur

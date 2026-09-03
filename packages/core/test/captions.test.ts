@@ -34,6 +34,21 @@ describe('captions', () => {
     expect(en.user).toContain('2 unidentified person(s)');
   });
 
+  it('varies the wording from one photo to the next', () => {
+    // Même contexte, rang différent : les tournures doivent tourner.
+    const captions = new Set(
+      Array.from({ length: 6 }, (_, variant) => generateTemplateCaption({ context: ctx, style: 'family', variant })),
+    );
+    expect(captions.size).toBeGreaterThanOrEqual(5);
+    // Le contexte manquant écarte les gabarits qui en dépendent.
+    const bare: CaptionContext = { people: ['Zoé'], faceCount: 1, labels: [], locale: 'fr-FR' };
+    for (let variant = 0; variant < 8; variant++) {
+      const text = generateTemplateCaption({ context: bare, style: 'family', variant });
+      expect(text).not.toMatch(/undefined|, \.|  /);
+      expect(text.length).toBeGreaterThan(3);
+    }
+  });
+
   it('generates deterministic template captions for every style and language', async () => {
     const gen = new TemplateCaptionGenerator();
     for (const style of CAPTION_STYLES) {
@@ -47,8 +62,9 @@ describe('captions', () => {
     }
     const withNames = generateTemplateCaption({ context: ctx, style: 'formal' });
     expect(withNames).toContain('Léa et Tom');
+    // Sans personne, la légende parle du lieu, de la date ou de la saison.
     const scenery = generateTemplateCaption({ context: { ...ctx, people: [], faceCount: 0 }, style: 'minimal' });
-    expect(scenery).toMatch(/Plage|juillet/);
+    expect(scenery).toMatch(/Plage|juillet|été|La vue/);
   });
 
   it('sanitises LLM output', () => {

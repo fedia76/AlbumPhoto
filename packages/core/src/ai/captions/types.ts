@@ -24,6 +24,11 @@ export interface CaptionRequest {
   style: CaptionStyle;
   /** Longueur maximale (caractères) ; par défaut 90. */
   maxLength?: number;
+  /**
+   * Rang de la photo dans l'album. Sert à faire tourner les tournures : deux
+   * photos voisines ne doivent pas recevoir la même formulation.
+   */
+  variant?: number;
 }
 
 /** Port : générateur de légendes (implémentations locale-LLM ou par gabarits). */
