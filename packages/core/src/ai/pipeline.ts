@@ -310,7 +310,7 @@ export async function generateCaptions(
         params.signal?.addEventListener('abort', relay);
         try {
           // `variant` fait tourner les tournures d'une photo à l'autre.
-          const call = generator.generate({ context, style: params.style, variant: done }, timer.signal);
+          const call = generator.generate({ context, style: params.style, variant: done, photo: sel.analysis.photo }, timer.signal);
           const text = await withTimeout(call, params.timeoutMs ?? 0, relay);
           if (text) captions.set(photoId, text);
           else outcome = 'empty';

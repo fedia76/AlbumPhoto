@@ -3,6 +3,7 @@ import {
   CAPTION_STYLES,
   TemplateCaptionGenerator,
   buildCaptionPrompt,
+  buildVisionCaptionPrompt,
   generateTemplateCaption,
   hasEnoughText,
   joinNames,
@@ -75,6 +76,21 @@ describe('captions', () => {
     const long = sanitizeCaption('a'.repeat(50) + ' ' + 'b'.repeat(50), 60);
     expect(long.length).toBeLessThanOrEqual(61);
     expect(long.endsWith('…')).toBe(true);
+  });
+
+  it('builds a vision prompt that leans on the image, not on labels', () => {
+    const { system, user } = buildVisionCaptionPrompt({ context: ctx, style: 'family' });
+    expect(system).toMatch(/Tu vois la photo/);
+    expect(system).toMatch(/90 caractères maximum/);
+    // Le modèle voit le contenu : lui répéter les étiquettes n'apporte rien et
+    // l'induit en erreur quand ML Kit se trompe.
+    expect(user).not.toMatch(/plage/i);
+    expect(user).not.toMatch(/sourit/i);
+    // Les prénoms, eux, ne se devinent pas.
+    expect(user).toMatch(/Léa et Tom/);
+    expect(user).toMatch(/Été 2026/);
+    const english = buildVisionCaptionPrompt({ context: { ...ctx, locale: 'en-US' }, style: 'poetic' });
+    expect(english.system).toMatch(/You can see the photo/);
   });
 
   it('strips thinking blocks, closed or still open', () => {

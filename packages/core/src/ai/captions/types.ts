@@ -1,4 +1,5 @@
 import type { CaptionStyle } from '../../album/types';
+import type { SourcePhoto } from '../types';
 
 /** Tout ce que l'on sait d'une photo pour écrire sa légende. */
 export interface CaptionContext {
@@ -29,6 +30,12 @@ export interface CaptionRequest {
    * photos voisines ne doivent pas recevoir la même formulation.
    */
   variant?: number;
+  /**
+   * La photo elle-même, pour un générateur qui sait la regarder (modèle
+   * vision-langage). Les générateurs textuels l'ignorent : ils ne disposent
+   * que des faits rassemblés dans `context`.
+   */
+  photo?: SourcePhoto;
 }
 
 /** Port : générateur de légendes (implémentations locale-LLM ou par gabarits). */

@@ -38,6 +38,20 @@ const STYLE_LABELS: Record<CaptionStyle, string> = {
 
 const LOCALE = 'fr-FR';
 
+const ENGINES = ['template', 'llm', 'vlm'] as const satisfies readonly CaptionEngine[];
+
+const ENGINE_LABELS: Record<CaptionEngine, string> = {
+  template: 'Gabarits',
+  llm: 'Modèle texte',
+  vlm: 'Modèle vision',
+};
+
+const ENGINE_HINTS: Record<CaptionEngine, string> = {
+  template: 'Instantané, hors ligne : des tournures écrites à l\'avance, complétées avec les prénoms, la date et le lieu du moment.',
+  llm: "Un petit modèle de langage rédige à partir des faits relevés (prénoms, étiquettes de contenu, date). Il ne voit pas la photo. Téléchargement ~600 Mo, quelques secondes par légende.",
+  vlm: "Un modèle vision-langage regarde chaque photo avant d'écrire : c'est ce qui donne les légendes les plus justes. Téléchargement ~1 Go et jusqu'à une minute par photo.",
+};
+
 /** Nom attribué d'office : il ne doit pas gagner sur un nom saisi à la fusion. */
 const DEFAULT_NAME = /^Personne \d+$/;
 
@@ -118,7 +132,10 @@ export function WizardScreen() {
   const showCaptionActivity = (a: CaptionActivity) => {
     const elapsed = `${Math.round(a.elapsedMs / 1000)} s`;
     if (a.phase === 'generating') {
-      setProgress({ label: captionLabel(`${a.chars} caractères, ${elapsed}`), value: captionValue() });
+      // Un modèle vision reste muet le temps de regarder la photo : sans cette
+      // mention, ce silence passerait pour un blocage.
+      const detail = a.reading ? `lecture de la photo, ${elapsed}` : `${a.chars} caractères, ${elapsed}`;
+      setProgress({ label: captionLabel(detail), value: captionValue() });
       return;
     }
     // Le modèle est téléchargé puis chargé à la première légende : c'est la
@@ -283,7 +300,7 @@ export function WizardScreen() {
         personNames: names,
         selectedPeople: selected,
         signal: abort.signal,
-        timeoutMs: CAPTION_TIMEOUT_MS,
+        timeoutMs: CAPTION_TIMEOUT_MS[engine],
         onDiagnostic: logCaption,
         onProgress: (p) => {
           captionProgressRef.current = { done: p.done, total: p.total };
@@ -410,9 +427,11 @@ export function WizardScreen() {
             </View>
             <Text style={styles.label}>Moteur de légendes</Text>
             <View style={styles.chips}>
-              <Chip label="Gabarits (instantané)" selected={engine === 'template'} onPress={() => setEngine('template')} />
-              <Chip label="LLM local (téléchargement ~600 Mo)" selected={engine === 'llm'} onPress={() => setEngine('llm')} />
+              {ENGINES.map((e) => (
+                <Chip key={e} label={ENGINE_LABELS[e]} selected={engine === e} onPress={() => setEngine(e)} />
+              ))}
             </View>
+            <Text style={styles.hint}>{ENGINE_HINTS[engine]}</Text>
             <Button title="Parcourir mes photos" onPress={() => void startScan()} disabled={scanLimit <= 0} />
           </>
         )}
@@ -423,7 +442,7 @@ export function WizardScreen() {
             <Text style={styles.hint}>
               {step === 'scanning'
                 ? 'Visages, netteté et contenu sont analysés localement. Vous pouvez laisser l\'écran ouvert.'
-                : engine === 'llm'
+                : engine !== 'template'
                   ? 'Le modèle écrit chaque légende sur l\'appareil : comptez plusieurs dizaines de secondes par photo. Le compteur ci-dessus avance tant qu\'il travaille ; « Annuler » reste possible.'
                   : 'Composition de l\'album…'}
             </Text>

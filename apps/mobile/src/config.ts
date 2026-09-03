@@ -31,8 +31,14 @@ export const SCAN_LIMIT_PRESETS = [200, 600, 1500] as const;
 export const MAX_SCAN_LIMIT = 20_000;
 
 /**
- * Délai maximal accordé à une légende avant de passer au gabarit (ms). Le
- * générateur local s'interrompt bien avant ; ce garde-fou ne sert que si le
- * moteur natif cesse de répondre, pour que l'assistant ne reste pas figé.
+ * Délai maximal accordé à une légende avant de passer au gabarit (ms), par
+ * moteur. Le générateur local s'interrompt bien avant ; ce garde-fou ne sert
+ * que si le moteur natif cesse de répondre, pour que l'assistant ne reste pas
+ * figé. Le modèle vision lit l'image avant d'écrire : il lui faut bien plus de
+ * temps qu'à un modèle purement textuel.
  */
-export const CAPTION_TIMEOUT_MS = 75_000;
+export const CAPTION_TIMEOUT_MS: Record<'template' | 'llm' | 'vlm', number> = {
+  template: 0,
+  llm: 75_000,
+  vlm: 210_000,
+};

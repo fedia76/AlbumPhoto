@@ -100,9 +100,23 @@ src/services/                 adaptateurs natifs des « ports » définis dans @
   vérifie son MD5. Sans réseau, repli sur un embedding par pixels (approximatif) avec un seuil
   de regroupement adapté. Licence insightface : usage non commercial. Pour changer de modèle,
   éditez `src/config.ts`.
-- **Légendes** : au choix dans l'assistant, gabarits (instantané, hors ligne) ou LLM local
-  (Qwen 3 0.6B quantisé, ~600 Mo téléchargés une fois par `react-native-executorch`, puis
-  inférence sur l'appareil). Le prompt est construit par `buildCaptionPrompt` dans le cœur.
+- **Légendes** : trois moteurs au choix dans l'assistant (`src/services/captioner.ts`,
+  table `CAPTION_MODELS`).
+  - *Gabarits* : instantané, hors ligne, tournures écrites à l'avance.
+  - *Modèle texte* : Qwen 3 0.6B quantisé (~600 Mo téléchargés une fois par
+    `react-native-executorch`). Il ne voit pas la photo et n'écrit qu'à partir des faits
+    relevés — prénoms, étiquettes ML Kit, date. C'est la limite du procédé : les étiquettes
+    (« personne », « plage ») sont une matière trop mince pour une belle légende.
+  - *Modèle vision* : LFM2.5-VL 1.6B quantisé (XNNPACK, CPU ; environ 1 Go — l'ordre de
+    grandeur découle de la quantisation 8da4w, le chiffre exact s'affiche pendant le
+    téléchargement). La photo est réduite à 512 px de côté long puis passée au modèle via
+    `mediaPath` ; le prompt (`buildVisionCaptionPrompt`) ne lui répète donc pas ce qu'il a
+    sous les yeux et ne lui donne que ce qu'aucune image ne porte : les prénoms, la date,
+    l'événement. Comptez jusqu'à une minute par photo, la lecture de l'image comprise.
+
+  Les réglages d'échantillonnage (température, `topP`) sont laissés aux presets : chacun
+  porte les valeurs recommandées par ses auteurs, les écraser dégradait les légendes.
+  Le prompt textuel est construit par `buildCaptionPrompt` dans le cœur.
   Depuis la version 0.9, `react-native-executorch` exige un « resource fetcher » explicite :
   `initExecutorch({ resourceFetcher: ExpoResourceFetcher })` est appelé au premier chargement
   du modèle (`src/services/captioner.ts`). Sans lui, tout téléchargement échoue et
@@ -113,7 +127,10 @@ src/services/                 adaptateurs natifs des « ports » définis dans @
 Rien, côté natif, ne borne la longueur d'une réponse : un petit modèle qui part en boucle
 écrit jusqu'à saturer sa fenêtre de contexte, soit plusieurs minutes pour une seule légende.
 `LocalLlmCaptionGenerator` surveille donc chaque génération et l'interrompt (`interrupt()`)
-dès que la première ligne est complète, après 15 s sans le moindre jeton, ou au bout de 40 s.
+dès que la première ligne est complète, après un silence prolongé, ou au bout du délai total.
+Les bornes dépendent du moteur (`GenerationLimits`) : un modèle vision reste muet le temps de
+lire l'image — jusqu'à deux minutes — et l'interrompre pendant cette phase gâcherait tout le
+travail, alors qu'un modèle textuel qui ne dit rien après 25 s est bloqué.
 Si le moteur natif ne rend toujours pas la main, la légende part au gabarit et le reste de
 l'album aussi — plutôt que d'attendre indéfiniment. Le cœur ajoute un garde-fou indépendant
 (`generateCaptions({ timeoutMs })`, 75 s) pour tout générateur qui se bloquerait.

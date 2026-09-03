@@ -3,6 +3,7 @@ import {
   DEFAULT_CAPTION_MAX_LENGTH,
   TemplateCaptionGenerator,
   buildCaptionPrompt,
+  buildVisionCaptionPrompt,
   hasEnoughText,
   sanitizeCaption,
   stripThinking,
@@ -11,35 +12,96 @@ import {
 } from '@albumphoto/core';
 import { log } from '../diagnostics/log';
 import { isExecutorchLinked } from './nativeAvailability';
+import { getPhotoThumbnail } from './photoThumbnails';
 
 type ExecutorchModule = typeof import('react-native-executorch');
 type ResourceFetcherModule = typeof import('react-native-executorch-expo-resource-fetcher');
+/** Preset de modèle tel qu'attendu par `LLMModule.fromModelName`. */
+type ModelPreset = Parameters<(typeof LLMModule)['fromModelName']>[0];
 
 /** `initExecutorch` n'est à appeler qu'une fois par session. */
 let resourceFetcherReady = false;
 
-/** Nom du modèle, en dur : le lire depuis le module chargerait sa partie native. */
-const LLM_MODEL_NAME = 'qwen3-0.6b-quantized';
+/* --------------------------------- Modèles -------------------------------- */
+
+/** Bornes de surveillance d'une génération, en millisecondes. */
+export interface GenerationLimits {
+  /** Attente du tout premier jeton : c'est la phase de lecture du prompt. */
+  firstToken: number;
+  /** Silence toléré entre deux lots de jetons, une fois l'écriture lancée. */
+  silence: number;
+  /** Durée totale, au-delà de laquelle le modèle est interrompu. */
+  total: number;
+}
 
 /**
- * Réglages d'échantillonnage. `repetitionPenalty` compte : rien ne borne le
- * nombre de jetons produits côté natif, et un petit modèle qui se répète peut
- * écrire jusqu'à saturer sa fenêtre de contexte — soit plusieurs minutes pour
- * une seule légende. Les lots de jetons sont volontairement courts et fréquents :
- * ils servent aussi de signe de vie et permettent de couper au bon moment.
+ * Un modèle de langage local utilisable pour les légendes. Le preset n'est lu
+ * qu'au chargement : y toucher plus tôt embarquerait la partie native.
+ */
+export interface LocalCaptionModel {
+  /** Identifiant du preset (sert aussi de `captionModel` dans l'album). */
+  readonly name: string;
+  /** Le modèle reçoit-il la photo, ou seulement les faits collectés ? */
+  readonly vision: boolean;
+  readonly preset: (mod: ExecutorchModule) => ModelPreset;
+  readonly limits: GenerationLimits;
+  /** Ajouté à la fin du message : `/no_think` désarme la réflexion de Qwen 3. */
+  readonly promptSuffix?: string;
+}
+
+/**
+ * Un modèle textuel n'écrit que quelques dizaines de jetons à partir d'un
+ * prompt court : tout doit aller vite.
+ */
+const TEXT_LIMITS: GenerationLimits = { firstToken: 25_000, silence: 15_000, total: 40_000 };
+
+/**
+ * Un modèle vision-langage lit d'abord l'image : plusieurs centaines de jetons
+ * visuels à ingérer avant le premier mot, ce qui peut demander une minute sur
+ * un téléphone. Interrompre pendant cette phase gâcherait tout le travail.
+ */
+const VISION_LIMITS: GenerationLimits = { firstToken: 120_000, silence: 20_000, total: 180_000 };
+
+/** Côté long de la vignette envoyée au modèle vision (il travaille en 512²). */
+const VISION_IMAGE_SIZE = 512;
+
+/**
+ * Moteurs de légendes proposés dans l'assistant.
+ *
+ * `llm` ne connaît de la photo que les étiquettes de ML Kit (« personne »,
+ * « plage »…) : la matière est mince, et les légendes s'en ressentent. `vlm`
+ * regarde la photo elle-même, au prix d'un modèle plus lourd et plus lent.
+ */
+export const CAPTION_MODELS = {
+  llm: {
+    name: 'qwen3-0.6b-quantized',
+    vision: false,
+    preset: (mod) => mod.QWEN3_0_6B_QUANTIZED,
+    limits: TEXT_LIMITS,
+    promptSuffix: '\n/no_think',
+  },
+  vlm: {
+    name: 'lfm2.5-vl-1.6b-quantized',
+    vision: true,
+    preset: (mod) => mod.LFM2_5_VL_1_6B_QUANTIZED,
+    limits: VISION_LIMITS,
+  },
+} as const satisfies Record<string, LocalCaptionModel>;
+
+export type CaptionEngine = 'template' | keyof typeof CAPTION_MODELS;
+
+/**
+ * Réglages de génération communs. La température et le `topP` sont laissés au
+ * modèle : chaque preset porte les valeurs recommandées par ses auteurs, et les
+ * écraser dégradait les légendes. `repetitionPenalty` borne les boucles, et les
+ * lots de jetons courts servent de signe de vie.
  */
 const GENERATION_CONFIG = {
-  temperature: 0.7,
-  topP: 0.9,
   repetitionPenalty: 1.1,
   outputTokenBatchSize: 8,
   batchTimeInterval: 300,
 } as const;
 
-/** Durée maximale d'une légende avant interruption du modèle. */
-const GENERATION_TIMEOUT_MS = 40_000;
-/** Silence maximal entre deux lots de jetons : au-delà, le modèle est bloqué. */
-const TOKEN_SILENCE_MS = 15_000;
 /** Délai laissé au moteur natif pour rendre la main après une interruption. */
 const INTERRUPT_GRACE_MS = 15_000;
 /** Cadence des signes de vie envoyés à l'interface pendant une génération. */
@@ -91,6 +153,8 @@ export interface CaptionActivity {
   /** Caractères déjà produits par le modèle pour cette légende. */
   chars: number;
   elapsedMs: number;
+  /** Le modèle lit encore la photo : aucun mot n'est attendu avant la fin. */
+  reading?: boolean;
 }
 
 /** Comptes de l'album, pour le journal et le message de fin. */
@@ -99,7 +163,7 @@ export interface CaptionStats {
   model: number;
   /** Légendes issues des gabarits (échec, blocage ou modèle abandonné). */
   template: number;
-  /** Générations coupées court (assez de texte, silence ou délai dépassé). */
+  /** Générations coupées court (silence, délai dépassé ou annulation). */
   interrupted: number;
   /** Générations dont le moteur natif n'a jamais rendu la main. */
   stuck: number;
@@ -129,7 +193,7 @@ async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<{ done:
 }
 
 /**
- * Légendes par LLM local (react-native-executorch). Le modèle est téléchargé
+ * Légendes par modèle local (react-native-executorch). Le modèle est téléchargé
  * une fois puis exécuté sur l'appareil. En cas d'échec, repli sur les gabarits.
  *
  * Rien, côté natif, ne borne la longueur d'une réponse : la génération est donc
@@ -139,7 +203,7 @@ async function settleWithin<T>(promise: Promise<T>, ms: number): Promise<{ done:
  * une génération s'est arrêtée.
  */
 export class LocalLlmCaptionGenerator implements CaptionGenerator {
-  readonly name = LLM_MODEL_NAME;
+  readonly name: string;
   private llm?: LLMModule;
   private loading?: Promise<LLMModule>;
   private readonly fallback = new TemplateCaptionGenerator();
@@ -151,31 +215,38 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
   private sink: ((token: string) => void) | null = null;
   private index = 0;
   private consecutiveFailures = 0;
+  /** Une seule plainte si les photos n'arrivent pas jusqu'au modèle vision. */
+  private warnedMissingPhoto = false;
   readonly stats: CaptionStats = { model: 0, template: 0, interrupted: 0, stuck: 0, totalMs: 0 };
 
   constructor(
+    private readonly model: LocalCaptionModel,
     private readonly onDownloadProgress?: (p: number) => void,
     private readonly onActivity?: (a: CaptionActivity) => void,
-  ) {}
+  ) {
+    this.name = model.name;
+  }
 
   load(): Promise<LLMModule> {
     if (!this.loading) {
-      const { LLMModule: Module, QWEN3_0_6B_QUANTIZED } = loadExecutorch();
+      const mod = loadExecutorch();
       const startedAt = Date.now();
-      log('info', `Chargement du modèle de légendes « ${LLM_MODEL_NAME} »…`);
-      this.loading = Module.fromModelName(QWEN3_0_6B_QUANTIZED, this.onDownloadProgress, (token) => this.sink?.(token)).then(
-        (llm) => {
-          llm.configure({ generationConfig: { ...GENERATION_CONFIG } });
-          log('info', `Modèle de légendes prêt en ${seconds(Date.now() - startedAt)}.`);
-          this.llm = llm;
-          return llm;
-        },
-      );
+      log('info', `Chargement du modèle de légendes « ${this.model.name} »…`);
+      this.loading = mod.LLMModule.fromModelName(this.model.preset(mod), this.onDownloadProgress, (token) =>
+        this.sink?.(token),
+      ).then((llm) => {
+        // Seuls les réglages de cadence et de répétition sont imposés : la
+        // température du preset est celle que ses auteurs recommandent.
+        llm.configure({ generationConfig: { ...GENERATION_CONFIG } });
+        log('info', `Modèle de légendes prêt en ${seconds(Date.now() - startedAt)}.`);
+        this.llm = llm;
+        return llm;
+      });
     }
     return this.loading;
   }
 
-  /** Raison pour laquelle le LLM local n'a pas pu servir, le cas échéant. */
+  /** Raison pour laquelle le modèle local n'a pas pu servir, le cas échéant. */
   get fallbackReason(): string | null {
     return this.unavailable;
   }
@@ -221,13 +292,37 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     return this.useFallback(req);
   }
 
+  /**
+   * Vignette de la photo à soumettre au modèle vision. Elle est réduite à
+   * `VISION_IMAGE_SIZE` : l'original coûterait des milliers de jetons visuels
+   * pour aucun gain, le modèle travaillant de toute façon par tuiles de 512².
+   */
+  private async photoForVision(req: CaptionRequest, index: number): Promise<string | undefined> {
+    if (!this.model.vision) return undefined;
+    if (!req.photo) {
+      if (!this.warnedMissingPhoto) {
+        this.warnedMissingPhoto = true;
+        log('warn', 'Modèle vision sans photo à regarder : légendes écrites à partir des seuls faits.');
+      }
+      return undefined;
+    }
+    try {
+      return await getPhotoThumbnail(req.photo, VISION_IMAGE_SIZE);
+    } catch (e) {
+      log('warn', `Légende ${index} : vignette illisible, le modèle écrira sans voir la photo`, e);
+      return undefined;
+    }
+  }
+
   /** Une seule génération, surveillée du premier au dernier jeton. */
   private async runOne(llm: LLMModule, req: CaptionRequest, index: number, signal?: AbortSignal): Promise<string> {
-    const { system, user } = buildCaptionPrompt(req);
-    const maxLength = req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
     const startedAt = Date.now();
+    const mediaPath = await this.photoForVision(req, index);
+    const { system, user } = mediaPath ? buildVisionCaptionPrompt(req) : buildCaptionPrompt(req);
+    const maxLength = req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
+    const limits = this.model.limits;
     let raw = '';
-    let lastToken = startedAt;
+    let lastToken = 0;
     let stopped: string | null = null;
 
     const interrupt = (reason: string) => {
@@ -247,16 +342,24 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     };
     const heartbeat = setInterval(() => {
       const elapsed = Date.now() - startedAt;
-      this.onActivity?.({ phase: 'generating', index, chars: stripThinking(raw).length, elapsedMs: elapsed });
-      if (elapsed >= GENERATION_TIMEOUT_MS) interrupt(`délai de ${seconds(GENERATION_TIMEOUT_MS)} dépassé`);
-      else if (Date.now() - lastToken >= TOKEN_SILENCE_MS) interrupt(`aucun jeton depuis ${seconds(TOKEN_SILENCE_MS)}`);
+      // Tant qu'aucun jeton n'est arrivé, le modèle lit le prompt (et l'image) :
+      // c'est la phase la plus longue, et elle a son propre délai.
+      const reading = lastToken === 0;
+      this.onActivity?.({ phase: 'generating', index, chars: stripThinking(raw).length, elapsedMs: elapsed, reading });
+      if (elapsed >= limits.total) interrupt(`délai de ${seconds(limits.total)} dépassé`);
+      else if (reading && elapsed >= limits.firstToken) interrupt(`aucun mot après ${seconds(limits.firstToken)} de lecture`);
+      else if (!reading && Date.now() - lastToken >= limits.silence) interrupt(`aucun jeton depuis ${seconds(limits.silence)}`);
     }, HEARTBEAT_MS);
     const onAbort = () => interrupt('annulation');
     signal?.addEventListener('abort', onAbort);
 
     const call = llm.generate([
       { role: 'system', content: system },
-      { role: 'user', content: `${user}\n/no_think` },
+      {
+        role: 'user',
+        content: `${user}${this.model.promptSuffix ?? ''}`,
+        ...(mediaPath ? { mediaPath } : {}),
+      },
     ]);
     // Retenue même en cas d'échec : la légende suivante doit attendre que le
     // moteur natif se soit vraiment libéré.
@@ -264,7 +367,7 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     try {
       // Après une interruption le moteur peut encore rendre un jeton ou deux ;
       // passé ce délai supplémentaire, il ne répondra plus.
-      const answer = await settleWithin(call, GENERATION_TIMEOUT_MS + INTERRUPT_GRACE_MS);
+      const answer = await settleWithin(call, limits.total + INTERRUPT_GRACE_MS);
       const elapsed = Date.now() - startedAt;
       // Couper une digression est anormal ; couper une légende finie ne l'est pas.
       if (stopped && stopped !== ENOUGH) this.stats.interrupted++;
@@ -279,7 +382,9 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
       }
       log(
         'info',
-        `Légende ${index} : ${seconds(elapsed)}, ${this.tokenCounts(llm)}, ${raw.length} car.${stopped ? ` — coupée (${stopped})` : ''}`,
+        `Légende ${index} : ${seconds(elapsed)}${mediaPath ? ' (photo lue)' : ''}, ${this.tokenCounts(llm)}, ${raw.length} car.${
+          stopped ? ` — coupée (${stopped})` : ''
+        }`,
       );
       return sanitizeCaption(stripThinking(answer.value), req.maxLength);
     } finally {
@@ -355,12 +460,11 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
   }
 }
 
-export type CaptionEngine = 'llm' | 'template';
-
 export function createCaptionGenerator(
   engine: CaptionEngine,
   onDownloadProgress?: (p: number) => void,
   onActivity?: (a: CaptionActivity) => void,
 ): CaptionGenerator {
-  return engine === 'llm' ? new LocalLlmCaptionGenerator(onDownloadProgress, onActivity) : new TemplateCaptionGenerator();
+  if (engine === 'template') return new TemplateCaptionGenerator();
+  return new LocalLlmCaptionGenerator(CAPTION_MODELS[engine], onDownloadProgress, onActivity);
 }

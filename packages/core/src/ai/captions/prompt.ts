@@ -48,6 +48,36 @@ export function buildCaptionPrompt(req: CaptionRequest): { system: string; user:
   return { system, user };
 }
 
+/**
+ * Prompt destiné à un modèle vision-langage : il a la photo sous les yeux, on
+ * ne lui décrit donc pas ce qu'elle montre. Seuls comptent les faits qu'aucune
+ * image ne porte — les prénoms, la date, l'événement — et la consigne de style.
+ */
+export function buildVisionCaptionPrompt(req: CaptionRequest): { system: string; user: string } {
+  const { context: c, style } = req;
+  const fr = c.locale.startsWith('fr');
+  const maxLen = req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
+  const facts: string[] = [];
+  if (c.people.length) {
+    facts.push(
+      fr
+        ? `Sur la photo : ${joinNames(c.people, c.locale)}. N'utilise aucun autre prénom.`
+        : `In the photo: ${joinNames(c.people, c.locale)}. Use no other name.`,
+    );
+  }
+  if (c.takenAt) facts.push(fr ? `Prise le ${c.takenAt.slice(0, 10)}` : `Taken on ${c.takenAt.slice(0, 10)}`);
+  if (c.eventTitle) facts.push(fr ? `Événement : ${c.eventTitle}` : `Event: ${c.eventTitle}`);
+  if (c.albumTitle) facts.push(fr ? `Album : ${c.albumTitle}` : `Album: ${c.albumTitle}`);
+
+  const system = fr
+    ? `Tu écris des légendes d'album photo en français. Tu vois la photo : appuie-toi sur ce qu'elle montre. Réponds uniquement par la légende, sur une seule ligne, sans guillemets ni explication, ${maxLen} caractères maximum. Ton : ${STYLE_FR[style]}. N'invente ni noms, ni lieux, ni détails absents de l'image.`
+    : `You write photo album captions in English. You can see the photo: base the caption on what it shows. Reply with the caption only, on a single line, no quotes or explanation, at most ${maxLen} characters. Tone: ${STYLE_EN[style]}. Do not invent names, places or details absent from the image.`;
+  const user =
+    (fr ? 'Écris la légende de cette photo.' : 'Write the caption for this photo.') +
+    (facts.length ? `\n${facts.map((f) => `- ${f}`).join('\n')}` : '');
+  return { system, user };
+}
+
 /** Retire les blocs de réflexion des modèles « thinking » (Qwen 3, etc.). */
 export function stripThinking(text: string): string {
   // Un bloc encore ouvert est retiré lui aussi : pendant une génération en

@@ -37,7 +37,8 @@ albumphoto/
    détail des quatre critères, et les photos écartées avec le motif (floue, quasi-doublon,
    trop de photos du même moment, album complet).
 6. **Légendes** dans le style choisi — drôle, formel, poétique, minimaliste, famille — par un
-   **LLM local** (react-native-executorch, Qwen 3 0.6B quantisé) avec repli sur un générateur
+   **modèle local** : soit un modèle vision-langage qui regarde la photo (LFM2.5-VL 1.6B),
+   soit un modèle textuel qui écrit à partir des faits relevés (Qwen 3 0.6B), avec repli sur un générateur
    par gabarits dont les tournures dépendent du contexte (personnes, date, saison, moment de la
    journée, contenu) et tournent d'une photo à l'autre.
 7. **Assemblage** de l'album : couverture, chapitres par événement (écart temporel), rythme de
@@ -86,5 +87,5 @@ dépend d'aucune API native et pourra être publié pour les autres clients.
 
 - Web / desktop : réutiliser `@albumphoto/core` avec un renderer Canvas/SVG et un export PDF.
 - Éditeur : rotation, fonds et polices, réordonnancement des pages par glisser-déposer.
-- IA : modèle d'embedding de visage packagé, légendes multimodales (modèle vision-langage local),
-  géocodage inverse hors ligne pour les lieux.
+- IA : modèle d'embedding de visage packagé, géocodage inverse hors ligne pour les lieux,
+  comparaison des moteurs de légendes sur un même album.

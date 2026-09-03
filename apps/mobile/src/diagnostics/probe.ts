@@ -67,10 +67,13 @@ export function runProbes(): ProbeResult[] {
       const ort = require('onnxruntime-react-native') as { InferenceSession?: { create?: unknown } };
       return typeof ort.InferenceSession?.create === 'function' ? 'disponible' : 'API inattendue';
     }),
-    probe('react-native-executorch', 'Légendes par LLM local', false, () => {
+    probe('react-native-executorch', 'Légendes par modèle local', false, () => {
       if (!isExecutorchLinked()) throw new Error('module natif non lié (ETInstaller absent)');
-      const rne = require('react-native-executorch') as { isAvailable?: boolean };
-      return rne.isAvailable ? 'disponible' : 'runtime natif absent (repli sur les gabarits)';
+      const rne = require('react-native-executorch') as { isAvailable?: boolean; LFM2_5_VL_1_6B_QUANTIZED?: unknown };
+      if (!rne.isAvailable) return 'runtime natif absent (repli sur les gabarits)';
+      // Le moteur « vision » n'existe qu'à partir des presets multimodaux : son
+      // absence explique un choix de moteur qui retombe sur les gabarits.
+      return rne.LFM2_5_VL_1_6B_QUANTIZED ? 'disponible, moteur vision inclus' : 'disponible, sans moteur vision';
     }),
   ];
 }
