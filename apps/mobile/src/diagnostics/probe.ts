@@ -75,6 +75,13 @@ export function runProbes(): ProbeResult[] {
       // absence explique un choix de moteur qui retombe sur les gabarits.
       return rne.LFM2_5_VL_1_6B_QUANTIZED ? 'disponible, moteur vision inclus' : 'disponible, sans moteur vision';
     }),
+    probe('@anthropic-ai/sdk', 'Rédaction des légendes en ligne', false, () => {
+      // Le SDK est du JavaScript pur, mais il importe des modules Node par un
+      // fichier que Metro doit rediriger (voir `metro.config.js`) : si la
+      // redirection saute, l'erreur apparaît ici plutôt qu'au milieu d'un album.
+      const sdk = require('@anthropic-ai/sdk') as { default?: unknown };
+      return typeof sdk.default === 'function' ? 'disponible' : 'API inattendue';
+    }),
   ];
 }
 

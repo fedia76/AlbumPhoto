@@ -23,6 +23,7 @@ import { useNavigation } from '../navigation';
 import { createAdapters, ensureMediaPermission, type AppAdapters } from '../services';
 import type { CaptionEngine } from '../services/captioner';
 import { captionJob } from '../services/captionJob';
+import { looksLikeApiKey, maskApiKey, readApiKey, writeApiKey } from '../services/apiKey';
 import { renderFaceThumbnail } from '../services/faceThumbnails';
 import { saveAlbum } from '../storage/albumStore';
 import { log } from '../diagnostics/log';
@@ -43,18 +44,21 @@ const STYLE_LABELS: Record<CaptionStyle, string> = {
 
 const LOCALE = 'fr-FR';
 
-const ENGINES = ['template', 'llm', 'vlm'] as const satisfies readonly CaptionEngine[];
+const ENGINES = ['template', 'llm', 'vlm', 'cloud'] as const satisfies readonly CaptionEngine[];
 
 const ENGINE_LABELS: Record<CaptionEngine, string> = {
   template: 'Gabarits',
   llm: 'Modèle texte',
   vlm: 'Modèle vision',
+  cloud: 'Vision + rédaction en ligne',
 };
 
 const ENGINE_HINTS: Record<CaptionEngine, string> = {
   template: 'Instantané, hors ligne : des tournures écrites à l\'avance, complétées avec les prénoms, la date et le lieu du moment.',
   llm: "Un petit modèle de langage rédige à partir des faits relevés (prénoms, étiquettes de contenu, date). Il ne voit pas la photo. Téléchargement ~600 Mo. L'album s'ouvre tout de suite, les légendes s'écrivent en arrière-plan.",
   vlm: "Un modèle vision-langage regarde chaque photo avant d'écrire : c'est ce qui donne les légendes les plus justes. Téléchargement ~1 Go, jusqu'à une minute par photo. L'album s'ouvre tout de suite, les légendes s'écrivent en arrière-plan.",
+  cloud:
+    "Le modèle local regarde la photo et la décrit ; Claude Haiku 4.5 écrit la légende. Seule la description et les prénoms sortent de l'appareil — jamais vos photos. Nécessite une clé d'API Anthropic ; comptez moins d'un centime pour un album.",
 };
 
 /** Nom attribué d'office : il ne doit pas gagner sur un nom saisi à la fusion. */
@@ -79,10 +83,29 @@ export function WizardScreen() {
   const [faceThumbs, setFaceThumbs] = useState<Map<string, string>>(new Map());
   const [mergeMode, setMergeMode] = useState(false);
   const [mergePick, setMergePick] = useState<Set<string>>(new Set());
+  /** Clé d'API enregistrée, pour le moteur en ligne. */
+  const [storedKey, setStoredKey] = useState('');
+  const [keyInput, setKeyInput] = useState('');
+  const [editingKey, setEditingKey] = useState(false);
   const adaptersRef = useRef<AppAdapters | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+  useEffect(() => {
+    void readApiKey().then(setStoredKey);
+  }, []);
+
+  /** Enregistre la clé du rédacteur en ligne, après un contrôle de forme. */
+  const saveKey = async () => {
+    const value = keyInput.trim();
+    if (!(await writeApiKey(value))) {
+      Alert.alert('Clé non enregistrée', "L'appareil a refusé d'enregistrer la clé. Réessayez.");
+      return;
+    }
+    setStoredKey(value);
+    setKeyInput('');
+    setEditingKey(false);
+  };
 
   /** Nombre de photos à parcourir, borné, ou 0 si la saisie est vide. */
   const scanLimit = useMemo(() => {
@@ -412,7 +435,49 @@ export function WizardScreen() {
               ))}
             </View>
             <Text style={styles.hint}>{ENGINE_HINTS[engine]}</Text>
-            <Button title="Parcourir mes photos" onPress={() => void startScan()} disabled={scanLimit <= 0} />
+            {engine === 'cloud' ? (
+              <>
+                <Text style={styles.label}>Clé d'API Anthropic</Text>
+                {storedKey && !editingKey ? (
+                  <View style={styles.countRow}>
+                    <Text style={styles.countHint}>Clé enregistrée ({maskApiKey(storedKey)}), conservée sur cet appareil.</Text>
+                    <Button
+                      title="Changer"
+                      variant="ghost"
+                      onPress={() => {
+                        setEditingKey(true);
+                        setKeyInput('');
+                      }}
+                    />
+                  </View>
+                ) : (
+                  <>
+                    <TextInput
+                      value={keyInput}
+                      onChangeText={setKeyInput}
+                      style={styles.input}
+                      placeholder="sk-ant-…"
+                      placeholderTextColor={colors.muted}
+                      secureTextEntry
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <Button
+                      title="Enregistrer la clé"
+                      variant="secondary"
+                      onPress={() => void saveKey()}
+                      disabled={!looksLikeApiKey(keyInput)}
+                    />
+                    <Text style={styles.hint}>À créer sur console.anthropic.com. Elle ne quitte pas l'appareil.</Text>
+                  </>
+                )}
+              </>
+            ) : null}
+            <Button
+              title="Parcourir mes photos"
+              onPress={() => void startScan()}
+              disabled={scanLimit <= 0 || (engine === 'cloud' && !storedKey)}
+            />
           </>
         )}
 

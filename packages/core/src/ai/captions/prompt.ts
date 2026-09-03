@@ -61,6 +61,9 @@ export function buildCaptionPrompt(req: CaptionRequest): { system: string; user:
   const fr = c.locale.startsWith('fr');
   const maxLen = req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
   const facts: string[] = [];
+  // La description passe en premier : c'est le seul fait qui décrit vraiment la
+  // photo, les autres ne font que la situer.
+  if (c.description) facts.push(fr ? `La photo montre : ${c.description}` : `The photo shows: ${c.description}`);
   if (c.people.length) facts.push(fr ? `Personnes : ${joinNames(c.people, c.locale)}` : `People: ${joinNames(c.people, c.locale)}`);
   else if (c.faceCount > 0) facts.push(fr ? `${c.faceCount} personne(s) non identifiée(s)` : `${c.faceCount} unidentified person(s)`);
   else facts.push(fr ? 'Aucune personne (paysage ou objet)' : 'No people (scenery or object)');
@@ -76,6 +79,23 @@ export function buildCaptionPrompt(req: CaptionRequest): { system: string; user:
     : `You write photo album captions in English. Reply with the caption only, on a single line, with no preamble, quotes or explanation, at most ${maxLen} characters. ${toneInstruction(style, false)}. Do not invent names or places not present in the facts.`;
   const user = (fr ? 'Faits sur la photo :\n' : 'Facts about the photo:\n') + facts.map((f) => `- ${f}`).join('\n');
   return { system, user };
+}
+
+/**
+ * Prompt de description : le modèle vision dit ce qu'il voit, sans style ni
+ * consigne de longueur. C'est ce qu'un petit modèle sait faire de mieux —
+ * décrire — quand écrire une jolie phrase française le dépasse.
+ *
+ * La consigne est en anglais à dessein : ces modèles sont entraînés
+ * majoritairement en anglais et y décrivent nettement mieux. La description
+ * n'est pas montrée à l'utilisateur, elle nourrit le rédacteur.
+ */
+export function buildDescriptionPrompt(): { system: string; user: string } {
+  return {
+    system:
+      'You describe photographs factually for a caption writer. One or two short sentences. Say who is in frame (adults, children, babies, nobody), what they are doing, the setting, and the mood. Never invent names. No preamble, no commentary.',
+    user: 'Describe this photo.',
+  };
 }
 
 /**

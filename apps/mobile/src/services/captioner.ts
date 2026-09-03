@@ -3,6 +3,7 @@ import {
   DEFAULT_CAPTION_MAX_LENGTH,
   TemplateCaptionGenerator,
   buildCaptionPrompt,
+  buildDescriptionPrompt,
   buildVisionCaptionPrompt,
   hasEnoughText,
   isStuckThinking,
@@ -14,6 +15,7 @@ import {
 import { log } from '../diagnostics/log';
 import { isExecutorchLinked } from './nativeAvailability';
 import { getPhotoThumbnail } from './photoThumbnails';
+import { RemoteCaptionWriter, REMOTE_MODEL } from './remoteWriter';
 
 type ExecutorchModule = typeof import('react-native-executorch');
 type ResourceFetcherModule = typeof import('react-native-executorch-expo-resource-fetcher');
@@ -66,6 +68,9 @@ const VISION_LIMITS: GenerationLimits = { firstToken: 120_000, silence: 20_000, 
 /** Côté long de la vignette envoyée au modèle vision (il travaille en 512²). */
 const VISION_IMAGE_SIZE = 512;
 
+/** Une description tient en une ou deux phrases ; au-delà c'est du bavardage. */
+const DESCRIPTION_MAX_LENGTH = 300;
+
 /**
  * Moteurs de légendes proposés dans l'assistant.
  *
@@ -89,7 +94,11 @@ export const CAPTION_MODELS = {
   },
 } as const satisfies Record<string, LocalCaptionModel>;
 
-export type CaptionEngine = 'template' | keyof typeof CAPTION_MODELS;
+/**
+ * Moteurs proposés. `cloud` réutilise le modèle vision pour décrire la photo et
+ * confie la rédaction à un modèle en ligne.
+ */
+export type CaptionEngine = 'template' | keyof typeof CAPTION_MODELS | 'cloud';
 
 /**
  * Réglages de génération communs. La température et le `topP` sont laissés au
@@ -311,23 +320,48 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
     return parts.join(', ');
   }
 
+  /**
+   * Le modèle, chargé et libre. `null` quand il ne le sera plus : un moteur qui
+   * ne rend pas la main ne la rendra pas davantage à la photo suivante.
+   */
+  private async ready(index: number, startedAt: number, signal?: AbortSignal): Promise<LLMModule | null> {
+    const llm = await this.loadWithHeartbeat(index, startedAt);
+    if (signal?.aborted) throw new Error('Génération annulée.');
+    // Une génération précédente peut encore occuper le moteur natif : le
+    // relancer maintenant échouerait avec « ModelGenerating ».
+    const free = await settleWithin(this.pending, INTERRUPT_GRACE_MS);
+    if (free.done) return llm;
+    this.unavailable = `Le moteur de génération est resté bloqué sur la légende ${index - 1}.`;
+    log('warn', `${this.unavailable} Gabarits pour la suite de l'album.`);
+    return null;
+  }
+
+  /**
+   * Ce que le modèle voit sur la photo, en une phrase — sans style ni longueur
+   * imposée. Sert à nourrir un rédacteur qui, lui, ne voit pas l'image.
+   * Renvoie une chaîne vide s'il n'a rien pu en tirer.
+   */
+  async describe(req: CaptionRequest, signal?: AbortSignal): Promise<string> {
+    if (this.unavailable !== null || !this.model.vision) return '';
+    const index = ++this.index;
+    const startedAt = Date.now();
+    try {
+      const llm = await this.ready(index, startedAt, signal);
+      if (!llm) return '';
+      return await this.runOne(llm, req, index, signal, 'description');
+    } catch (e) {
+      this.recordFailure(index, Date.now() - startedAt, e);
+      return '';
+    }
+  }
+
   async generate(req: CaptionRequest, signal?: AbortSignal): Promise<string> {
     if (this.unavailable !== null) return this.useFallback(req);
     const index = ++this.index;
     const startedAt = Date.now();
     try {
-      const llm = await this.loadWithHeartbeat(index, startedAt);
-      if (signal?.aborted) throw new Error('Génération annulée.');
-      // Une génération précédente peut encore occuper le moteur natif : le
-      // relancer maintenant échouerait avec « ModelGenerating ».
-      const free = await settleWithin(this.pending, INTERRUPT_GRACE_MS);
-      if (!free.done) {
-        // Un moteur qui ne se libère pas ne se libérera plus : toute légende
-        // suivante échouerait sur « ModelGenerating » après la même attente.
-        this.unavailable = `Le moteur de génération est resté bloqué sur la légende ${index - 1}.`;
-        log('warn', `${this.unavailable} Gabarits pour la suite de l'album.`);
-        return this.useFallback(req);
-      }
+      const llm = await this.ready(index, startedAt, signal);
+      if (!llm) return this.useFallback(req);
       const text = await this.runOne(llm, req, index, signal);
       if (text.length >= 3) {
         this.consecutiveFailures = 0;
@@ -365,11 +399,22 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
   }
 
   /** Une seule génération, surveillée du premier au dernier jeton. */
-  private async runOne(llm: LLMModule, req: CaptionRequest, index: number, signal?: AbortSignal): Promise<string> {
+  private async runOne(
+    llm: LLMModule,
+    req: CaptionRequest,
+    index: number,
+    signal?: AbortSignal,
+    mode: 'caption' | 'description' = 'caption',
+  ): Promise<string> {
     const startedAt = Date.now();
     const mediaPath = await this.photoForVision(req, index);
-    const { system, user } = mediaPath ? buildVisionCaptionPrompt(req) : buildCaptionPrompt(req);
-    const maxLength = req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
+    const describing = mode === 'description' && !!mediaPath;
+    const { system, user } = describing
+      ? buildDescriptionPrompt()
+      : mediaPath
+        ? buildVisionCaptionPrompt(req)
+        : buildCaptionPrompt(req);
+    const maxLength = describing ? DESCRIPTION_MAX_LENGTH : req.maxLength ?? DEFAULT_CAPTION_MAX_LENGTH;
     const limits = this.model.limits;
     let raw = '';
     let lastToken = 0;
@@ -429,16 +474,16 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
           'warn',
           `Légende ${index} : le moteur n'a pas répondu en ${seconds(elapsed)} (${raw.length} car. reçus, interruption : ${stopped ?? 'aucune'}).`,
         );
-        return sanitizeCaption(stripThinking(raw), req.maxLength);
+        return sanitizeCaption(stripThinking(raw), maxLength);
       }
       const thinking = isStuckThinking(answer.value);
       log(
         thinking ? 'warn' : 'info',
-        `Légende ${index} : ${seconds(elapsed)}${mediaPath ? ' (photo lue)' : ''}, ${this.tokenCounts(llm)}, ${raw.length} car.${
+        `${describing ? 'Description' : 'Légende'} ${index} : ${seconds(elapsed)}${mediaPath ? ' (photo lue)' : ''}, ${this.tokenCounts(llm)}, ${raw.length} car.${
           stopped ? ` — coupée (${stopped})` : ''
         }${thinking ? " — le modèle n'est jamais sorti de sa réflexion, rien d'exploitable" : ''}`,
       );
-      return sanitizeCaption(stripThinking(answer.value), req.maxLength);
+      return sanitizeCaption(stripThinking(answer.value), maxLength);
     } finally {
       clearInterval(heartbeat);
       signal?.removeEventListener('abort', onAbort);
@@ -512,11 +557,71 @@ export class LocalLlmCaptionGenerator implements CaptionGenerator {
   }
 }
 
+/**
+ * Le modèle local regarde la photo, un modèle en ligne écrit la légende.
+ *
+ * Chacun fait ce qu'il sait faire : un modèle de 1,6 milliard de paramètres
+ * décrit correctement une scène, mais écrit un français plat ; l'inverse est
+ * vrai d'un modèle distant, qui écrit bien mais ne voit rien. Seule la
+ * description sort de l'appareil — jamais la photo.
+ *
+ * Si le rédacteur en ligne fait défaut (pas de clé, pas de réseau, quota), la
+ * légende du modèle local prend le relais, et le gabarit après elle.
+ */
+export class HybridCaptionGenerator implements CaptionGenerator {
+  readonly name: string;
+
+  constructor(
+    private readonly local: LocalLlmCaptionGenerator,
+    private readonly writer: RemoteCaptionWriter = new RemoteCaptionWriter(),
+  ) {
+    this.name = `${local.name} + ${REMOTE_MODEL}`;
+  }
+
+  async prepare(signal?: AbortSignal): Promise<void> {
+    await this.local.prepare(signal);
+    // La clé est vérifiée tout de suite : sans elle, autant le savoir avant
+    // d'avoir décrit douze photos pour rien.
+    if (!(await this.writer.prepare())) {
+      log('warn', `Rédacteur en ligne indisponible : ${this.writer.failureReason}`);
+    }
+  }
+
+  async generate(req: CaptionRequest, signal?: AbortSignal): Promise<string> {
+    // Rédacteur définitivement hors jeu : inutile de décrire puis d'échouer,
+    // le modèle local écrit directement sa propre légende.
+    if (this.writer.failureReason) return this.local.generate(req, signal);
+    const description = await this.local.describe(req, signal);
+    const enriched: CaptionRequest = description
+      ? { ...req, context: { ...req.context, description } }
+      : req;
+    const remote = await this.writer.write(enriched, signal);
+    if (remote.length >= 3) return remote;
+    return this.local.generate(enriched, signal);
+  }
+
+  /** Ce qui a manqué, le rédacteur en ligne d'abord. */
+  get fallbackReason(): string | null {
+    return this.writer.failureReason ?? this.local.fallbackReason;
+  }
+
+  summary(): string {
+    return `${this.local.summary()} · en ligne : ${this.writer.costSummary()}`;
+  }
+
+  release(): void {
+    this.local.release();
+  }
+}
+
 export function createCaptionGenerator(
   engine: CaptionEngine,
   onDownloadProgress?: (p: number) => void,
   onActivity?: (a: CaptionActivity) => void,
 ): CaptionGenerator {
   if (engine === 'template') return new TemplateCaptionGenerator();
+  if (engine === 'cloud') {
+    return new HybridCaptionGenerator(new LocalLlmCaptionGenerator(CAPTION_MODELS.vlm, onDownloadProgress, onActivity));
+  }
   return new LocalLlmCaptionGenerator(CAPTION_MODELS[engine], onDownloadProgress, onActivity);
 }

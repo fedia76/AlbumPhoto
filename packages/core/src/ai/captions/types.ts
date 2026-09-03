@@ -9,6 +9,13 @@ export interface CaptionContext {
   faceCount: number;
   /** Étiquettes de contenu (IA locale), ex. « plage », « gâteau ». */
   labels: string[];
+  /**
+   * Ce que la photo montre, en une phrase. Renseigné quand un modèle
+   * vision-langage l'a regardée : c'est une matière autrement plus riche que
+   * les étiquettes, et le seul moyen pour un rédacteur qui ne voit pas l'image
+   * d'écrire quelque chose de juste.
+   */
+  description?: string;
   takenAt?: string;
   /** Moment de la journée dérivé de `takenAt`. */
   timeOfDay?: 'morning' | 'afternoon' | 'evening' | 'night';

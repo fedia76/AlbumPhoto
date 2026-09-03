@@ -4,6 +4,7 @@
   "main": "index.ts",
   "dependencies": {
     "@albumphoto/core": "*",
+    "@anthropic-ai/sdk": "^0.123.0",
     "@react-native-ml-kit/face-detection": "^2.0.1",
     "@react-native-ml-kit/image-labeling": "^2.0.0",
     "expo": "~57.0.19",
@@ -13,6 +14,7 @@
     "expo-image": "~57.0.4",
     "expo-image-manipulator": "~57.0.15",
     "expo-media-library": "~57.0.4",
+    "expo-secure-store": "~57.0.3",
     "expo-status-bar": "~57.0.1",
     "jpeg-js": "^0.4.4",
     "onnxruntime-react-native": "^1.24.3",

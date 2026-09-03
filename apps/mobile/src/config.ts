@@ -37,8 +37,11 @@ export const MAX_SCAN_LIMIT = 20_000;
  * figé. Le modèle vision lit l'image avant d'écrire : il lui faut bien plus de
  * temps qu'à un modèle purement textuel.
  */
-export const CAPTION_TIMEOUT_MS: Record<'template' | 'llm' | 'vlm', number> = {
+export const CAPTION_TIMEOUT_MS: Record<'template' | 'llm' | 'vlm' | 'cloud', number> = {
   template: 0,
   llm: 75_000,
   vlm: 210_000,
+  // Deux étapes : le modèle local décrit la photo, le rédacteur en ligne
+  // répond en une seconde ou deux. Le délai couvre les deux.
+  cloud: 240_000,
 };

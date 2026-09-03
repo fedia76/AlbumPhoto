@@ -74,10 +74,13 @@ src/screens/WizardScreen.tsx  assistant IA : parcours → personnes (fusion poss
 src/components/SelectionReview.tsx  revue détaillée : photos retenues, écartées, et motifs
 src/services/photoThumbnails.ts     vignettes des photos de l'appareil, mises en cache
 src/services/captionJob.ts          écriture des légendes en tâche de fond (avancement, reprise, arrêt)
+src/services/remoteWriter.ts        rédaction des légendes par Claude Haiku 4.5 (description seule, jamais la photo)
+src/services/apiKey.ts              clé d'API conservée sur l'appareil (magasin sécurisé, repli fichier)
 src/components/CaptionProgress.tsx  bandeau d'avancement des légendes (éditeur et accueil)
 src/screens/DiagnosticsScreen.tsx  état des modules natifs et journal partageable
 src/diagnostics/              journal disque, détection de plantage au démarrage, écran de secours
 src/services/                 adaptateurs natifs des « ports » définis dans @albumphoto/core
+metro.config.js               redirige le fichier Node du SDK Anthropic vers son jumeau navigateur
 ```
 
 ### Adaptateurs IA (tous sur l'appareil)
@@ -115,6 +118,19 @@ src/services/                 adaptateurs natifs des « ports » définis dans @
     `mediaPath` ; le prompt (`buildVisionCaptionPrompt`) ne lui répète donc pas ce qu'il a
     sous les yeux et ne lui donne que ce qu'aucune image ne porte : les prénoms, la date,
     l'événement. Comptez jusqu'à une minute par photo, la lecture de l'image comprise.
+
+  - *Vision + rédaction en ligne* : le modèle local **décrit** la photo (ce qu'un petit
+    modèle sait faire de mieux), **Claude Haiku 4.5** écrit la légende (ce qu'il fait
+    infiniment mieux qu'un modèle de 1,6 milliard de paramètres, en français surtout).
+    Ce qui sort de l'appareil : la description, les prénoms saisis, la date, l'événement
+    et le titre de l'album. **Jamais la photo.** Rien n'est envoyé tant que ce moteur
+    n'est pas explicitement choisi. Une clé d'API Anthropic est demandée dans l'assistant
+    et conservée sur l'appareil (magasin sécurisé du système, à défaut un fichier privé) ;
+    comptez moins d'un centime par album. Sans clé, sans réseau ou en cas de quota
+    épuisé, la légende du modèle local prend le relais, puis le gabarit.
+
+  La description est demandée **en anglais** : ces petits modèles y décrivent nettement
+  mieux, et le texte ne sert qu'à nourrir le rédacteur — il n'est jamais affiché.
 
   Les réglages d'échantillonnage (température, `topP`) sont laissés aux presets : chacun
   porte les valeurs recommandées par ses auteurs, les écraser dégradait les légendes.
@@ -179,6 +195,12 @@ Ce qui aide à diagnostiquer, dans « Diagnostic » :
   le modèle travaille, un compteur figé qu'il est bloqué.
 
 ### Confidentialité
+
+Les photos et les visages ne quittent **jamais** l'appareil, quel que soit le moteur.
+Les trois moteurs locaux (gabarits, texte, vision) n'émettent aucune requête réseau
+hors le téléchargement initial du modèle. Le quatrième, « Vision + rédaction en ligne »,
+doit être choisi explicitement et n'envoie que du texte : la description produite sur
+l'appareil, les prénoms que vous avez saisis, la date, l'événement et le titre de l'album.
 
 Les photos, visages et légendes ne quittent jamais l'appareil. Les albums ne stockent aucun
 vecteur biométrique, seulement les associations photo ↔ personne nommée.
