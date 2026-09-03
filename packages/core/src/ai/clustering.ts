@@ -122,6 +122,60 @@ export function clusterFaces(analyses: PhotoAnalysis[], opts: ClusterOptions = {
     });
 }
 
+/**
+ * Fusionne plusieurs groupes en un seul : l'IA sépare parfois la même personne
+ * en plusieurs visages (profil, lunettes, âge différent), l'utilisateur peut
+ * alors les réunir.
+ *
+ * Le groupe résultat garde l'identifiant du plus fourni, réunit les membres
+ * sans doublon, recalcule le centroïde pondéré par le nombre de membres et
+ * conserve le visage représentatif du plus fourni. L'ordre des autres groupes
+ * est préservé.
+ */
+export function mergeClusters(clusters: PersonCluster[], idsToMerge: readonly string[]): PersonCluster[] {
+  const ids = new Set(idsToMerge);
+  const targets = clusters.filter((c) => ids.has(c.id));
+  if (targets.length < 2) return clusters;
+
+  // Le plus fourni donne son identité (id et visage de référence).
+  const primary = targets.reduce((best, c) => (c.members.length > best.members.length ? c : best));
+  const dim = primary.centroid.length;
+  const sum = new Float32Array(dim);
+  const members: PersonCluster['members'] = [];
+  const seen = new Set<string>();
+  for (const c of targets) {
+    for (let i = 0; i < dim; i++) sum[i]! += (c.centroid[i] ?? 0) * c.members.length;
+    for (const m of c.members) {
+      const key = `${m.photoId}#${m.faceIndex}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      members.push(m);
+    }
+  }
+
+  const merged: PersonCluster = {
+    id: primary.id,
+    members,
+    centroid: l2Normalize(sum),
+    representative: primary.representative,
+  };
+
+  // On remet le groupe fusionné à la place du premier des groupes concernés.
+  const out: PersonCluster[] = [];
+  let inserted = false;
+  for (const c of clusters) {
+    if (!ids.has(c.id)) {
+      out.push(c);
+      continue;
+    }
+    if (!inserted) {
+      out.push(merged);
+      inserted = true;
+    }
+  }
+  return out;
+}
+
 /** Index inverse : photoId → ids des personnes présentes. */
 export function peopleByPhoto(clusters: PersonCluster[]): Map<string, string[]> {
   const map = new Map<string, string[]>();

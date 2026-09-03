@@ -1,9 +1,10 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import {
-  applyZoom,
+  MAX_SCALE,
+  MIN_SCALE,
   clampTransform,
   getTemplate,
   imageLayoutInSlot,
@@ -41,8 +42,15 @@ export function PageView({ album, page, width, selectedSlotId, onSlotPress, onTr
       </View>
     );
   }
+  // Sans gestionnaire, la page est décorative : elle ne doit pas intercepter les
+  // touchers, sinon les `Pressable` des zones avalent le tap destiné au parent
+  // (c'est ce qui empêchait de sélectionner une page depuis sa vignette).
+  const interactive = onSlotPress !== undefined || onTransformChange !== undefined;
   return (
-    <View style={[styles.page, { width, height, backgroundColor: page.background ?? album.theme.background }]}>
+    <View
+      pointerEvents={interactive ? 'auto' : 'none'}
+      style={[styles.page, { width, height, backgroundColor: page.background ?? album.theme.background }]}
+    >
       {template.slots.map((slot) => {
         const r = slotRectInPixels(slot, width, height);
         const box = { position: 'absolute' as const, left: r.x, top: r.y, width: r.w, height: r.h };
@@ -91,6 +99,7 @@ export function PageView({ album, page, width, selectedSlotId, onSlotPress, onTr
               photoHeight={photo.height}
               transform={placement.transform}
               onChange={(t) => onTransformChange(slot.id, t)}
+              {...(onSlotPress ? { onTap: () => onSlotPress(slot) } : {})}
             />
           );
         }
@@ -114,49 +123,104 @@ interface EditableSlotProps {
   photoHeight: number;
   transform: PhotoTransform;
   onChange: (t: PhotoTransform) => void;
+  onTap?: () => void;
 }
 
+const sameTransform = (a: PhotoTransform, b: PhotoTransform): boolean =>
+  a.scale === b.scale && a.offsetX === b.offsetX && a.offsetY === b.offsetY && a.rotation === b.rotation;
+
 /** Zone sélectionnée : glisser pour recadrer, pincer pour zoomer. */
-function EditableSlot({ album, slot, box, uri, photoWidth, photoHeight, transform, onChange }: EditableSlotProps) {
+function EditableSlot({ album, slot, box, uri, photoWidth, photoHeight, transform, onChange, onTap }: EditableSlotProps) {
   const [live, setLive] = useState<PhotoTransform>(transform);
-  const [start, setStart] = useState<PhotoTransform>(transform);
-  React.useEffect(() => {
+  // Base figée pendant toute l'interaction : les deux gestes sont simultanés et
+  // doivent partir du même état. Auparavant chacun reconstruisait la
+  // transformation depuis `start`, si bien que le déplacement (déclenché aussi
+  // par deux doigts) réécrivait l'échelle de départ et annulait le zoom.
+  const base = useRef<PhotoTransform>(transform);
+  const drag = useRef({ dx: 0, dy: 0 });
+  const zoom = useRef(1);
+  const touches = useRef(0);
+
+  useEffect(() => {
+    base.current = transform;
+    drag.current = { dx: 0, dy: 0 };
+    zoom.current = 1;
     setLive(transform);
-    setStart(transform);
   }, [transform]);
 
-  const commit = useCallback(
-    (t: PhotoTransform) => {
-      setLive(t);
-      setStart(t);
-      onChange(t);
-    },
-    [onChange],
-  );
+  /** Combine la contribution du déplacement et celle du zoom sur la base. */
+  const recompute = useCallback((): PhotoTransform => {
+    const start = base.current;
+    const scale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, start.scale * zoom.current));
+    // Le déplacement dépend de l'échelle courante : la part cachée de la photo
+    // change avec le zoom, on utilise donc l'échelle déjà combinée.
+    const d = panToOffsetDelta(
+      drag.current.dx,
+      drag.current.dy,
+      box.width,
+      box.height,
+      photoWidth,
+      photoHeight,
+      slot,
+      album.page,
+      scale,
+    );
+    return clampTransform({ ...start, scale, offsetX: start.offsetX + d.dOffsetX, offsetY: start.offsetY + d.dOffsetY });
+  }, [album.page, box.height, box.width, photoHeight, photoWidth, slot]);
 
-  const pan = Gesture.Pan()
-    .runOnJS(true)
-    .minDistance(2)
-    .onUpdate((e) => {
-      const d = panToOffsetDelta(e.translationX, e.translationY, box.width, box.height, photoWidth, photoHeight, slot, album.page, start.scale);
-      setLive(clampTransform({ ...start, offsetX: start.offsetX + d.dOffsetX, offsetY: start.offsetY + d.dOffsetY }));
-    })
-    .onEnd((e) => {
-      const d = panToOffsetDelta(e.translationX, e.translationY, box.width, box.height, photoWidth, photoHeight, slot, album.page, start.scale);
-      commit(clampTransform({ ...start, offsetX: start.offsetX + d.dOffsetX, offsetY: start.offsetY + d.dOffsetY }));
-    });
+  /** Fin de l'interaction : la transformation vécue devient la nouvelle base. */
+  const settle = useCallback(() => {
+    const next = recompute();
+    drag.current = { dx: 0, dy: 0 };
+    zoom.current = 1;
+    setLive(next);
+    if (sameTransform(next, base.current)) return; // simple tap : rien à enregistrer
+    base.current = next;
+    onChange(next);
+  }, [onChange, recompute]);
 
-  const pinch = Gesture.Pinch()
-    .runOnJS(true)
-    .onUpdate((e) => setLive(applyZoom(start, e.scale)))
-    .onEnd((e) => commit(applyZoom(start, e.scale)));
+  const gesture = useMemo(() => {
+    const begin = () => {
+      touches.current += 1;
+    };
+    const finalize = () => {
+      touches.current = Math.max(0, touches.current - 1);
+      if (touches.current === 0) settle();
+    };
+    const pan = Gesture.Pan()
+      .runOnJS(true)
+      .minDistance(2)
+      .onBegin(begin)
+      .onUpdate((e) => {
+        drag.current = { dx: e.translationX, dy: e.translationY };
+        setLive(recompute());
+      })
+      .onFinalize(finalize);
+    const pinch = Gesture.Pinch()
+      .runOnJS(true)
+      .onBegin(begin)
+      .onUpdate((e) => {
+        zoom.current = e.scale;
+        setLive(recompute());
+      })
+      .onFinalize(finalize);
+    const move = Gesture.Simultaneous(pan, pinch);
+    if (!onTap) return move;
+    // Un tap simple désélectionne la zone ; il ne doit pas être vu comme un
+    // déplacement, d'où la course entre les deux.
+    return Gesture.Race(Gesture.Tap().runOnJS(true).maxDistance(8).onEnd(onTap), move);
+  }, [onTap, recompute, settle]);
 
-  const gesture = Gesture.Simultaneous(pan, pinch);
   const layout = imageLayoutInSlot(photoWidth, photoHeight, slot, album.page, live, box.width, box.height);
   return (
     <GestureDetector gesture={gesture}>
       <View style={[box, styles.photoSlot, styles.selected]}>
-        <Image source={{ uri }} style={{ position: 'absolute', left: layout.left, top: layout.top, width: layout.imgW, height: layout.imgH }} contentFit="fill" cachePolicy="memory-disk" />
+        <Image
+          source={{ uri }}
+          style={{ position: 'absolute', left: layout.left, top: layout.top, width: layout.imgW, height: layout.imgH }}
+          contentFit="fill"
+          cachePolicy="memory-disk"
+        />
       </View>
     </GestureDetector>
   );

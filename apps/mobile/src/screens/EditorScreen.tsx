@@ -1,8 +1,23 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Alert,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  StyleSheet,
+  Text,
+  TextInput,
+  View,
+  type LayoutChangeEvent,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+} from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type * as MediaLibrary from 'expo-media-library/legacy';
-import { getTemplate, newId, type Photo, type TemplateSlot } from '@albumphoto/core';
+import { getTemplate, newId, type Page, type Photo, type TemplateSlot } from '@albumphoto/core';
 import { useNavigation } from '../navigation';
 import { useAlbumEditor } from '../hooks/useAlbumEditor';
 import { PageView } from '../components/PageView';
@@ -17,7 +32,6 @@ export function EditorScreen({ albumId }: { albumId: string }) {
   const nav = useNavigation();
   const editor = useAlbumEditor(albumId);
   const { album } = editor;
-  const { width } = useWindowDimensions();
   const [pageIndex, setPageIndex] = useState(0);
   const [selectedSlot, setSelectedSlot] = useState<string | undefined>();
   const [pickerFor, setPickerFor] = useState<string | null>(null);
@@ -25,42 +39,69 @@ export function EditorScreen({ albumId }: { albumId: string }) {
   const [showTemplates, setShowTemplates] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [canvas, setCanvas] = useState({ width: 0, height: 0 });
+  const pager = useRef<FlatList<Page>>(null);
+  const importer = useMemo(() => new BundlePhotoImporter(), []);
 
   useEffect(() => {
     if (editor.error) Alert.alert('Erreur', editor.error, [{ text: 'OK', onPress: editor.clearError }]);
   }, [editor.error, editor.clearError]);
 
-  const page = album?.pages[Math.min(pageIndex, Math.max(0, (album?.pages.length ?? 1) - 1))];
+  const pageCount = album?.pages.length ?? 0;
+  const safeIndex = Math.min(pageIndex, Math.max(0, pageCount - 1));
+  const page = album?.pages[safeIndex];
   const template = album && page ? getTemplate(album, page.templateId) : undefined;
-  const pageWidth = width - spacing.md * 2;
-  const importer = useMemo(() => new BundlePhotoImporter(), []);
 
-  if (!album) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <Header title="Album" left={<Button title="Retour" variant="ghost" onPress={nav.back} />} />
-        <ActivityIndicator style={{ marginTop: spacing.xl }} />
-      </SafeAreaView>
-    );
-  }
+  /** Change de page et amène le carrousel dessus. */
+  const goToPage = useCallback(
+    (index: number, animated = true) => {
+      const clamped = Math.max(0, Math.min(index, pageCount - 1));
+      setPageIndex(clamped);
+      setSelectedSlot(undefined);
+      if (canvas.width > 0 && pageCount > 0) {
+        pager.current?.scrollToOffset({ offset: clamped * canvas.width, animated });
+      }
+    },
+    [canvas.width, pageCount],
+  );
 
-  const onSlotPress = (slot: TemplateSlot) => {
-    if (!page) return;
-    if (slot.kind === 'text') {
-      setTextFor({ slotId: slot.id, text: page.texts[slot.id]?.text ?? '' });
-      return;
-    }
-    if (!page.photos[slot.id]) {
-      setPickerFor(slot.id);
-      return;
-    }
-    setSelectedSlot((s) => (s === slot.id ? undefined : slot.id));
-  };
+  const onCanvasLayout = useCallback((e: LayoutChangeEvent) => {
+    const { width, height } = e.nativeEvent.layout;
+    setCanvas((c) => (c.width === width && c.height === height ? c : { width, height }));
+  }, []);
+
+  const onPagerSettled = useCallback(
+    (e: NativeSyntheticEvent<NativeScrollEvent>) => {
+      if (canvas.width <= 0) return;
+      const index = Math.round(e.nativeEvent.contentOffset.x / canvas.width);
+      if (index !== pageIndex) {
+        setPageIndex(index);
+        setSelectedSlot(undefined);
+      }
+    },
+    [canvas.width, pageIndex],
+  );
+
+  const onSlotPress = useCallback(
+    (slot: TemplateSlot) => {
+      if (!page) return;
+      if (slot.kind === 'text') {
+        setTextFor({ slotId: slot.id, text: page.texts[slot.id]?.text ?? '' });
+        return;
+      }
+      if (!page.photos[slot.id]) {
+        setPickerFor(slot.id);
+        return;
+      }
+      setSelectedSlot((s) => (s === slot.id ? undefined : slot.id));
+    },
+    [page],
+  );
 
   const onPick = async (asset: MediaLibrary.Asset) => {
     const slotId = pickerFor;
     setPickerFor(null);
-    if (!slotId || !page) return;
+    if (!slotId || !page || !album) return;
     setImporting(true);
     try {
       const source = assetToSource(asset);
@@ -80,9 +121,8 @@ export function EditorScreen({ albumId }: { albumId: string }) {
   };
 
   const addPageAfter = () => {
-    editor.addPage('single', pageIndex + 1);
-    setPageIndex(pageIndex + 1);
-    setSelectedSlot(undefined);
+    editor.addPage('single', safeIndex + 1);
+    goToPage(safeIndex + 1);
   };
 
   const deletePage = () => {
@@ -94,12 +134,27 @@ export function EditorScreen({ albumId }: { albumId: string }) {
         style: 'destructive',
         onPress: () => {
           editor.removePage(page.id);
-          setPageIndex(Math.max(0, pageIndex - 1));
-          setSelectedSlot(undefined);
+          goToPage(Math.max(0, safeIndex - 1));
         },
       },
     ]);
   };
+
+  if (!album) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <Header title="Album" left={<Button title="Retour" variant="ghost" onPress={nav.back} />} />
+        <ActivityIndicator style={{ marginTop: spacing.xl }} />
+      </SafeAreaView>
+    );
+  }
+
+  // La page tient entièrement dans l'espace disponible, largeur et hauteur.
+  const aspect = album.page.width / album.page.height;
+  const pageWidth =
+    canvas.width > 0 && canvas.height > 0
+      ? Math.max(1, Math.min(canvas.width - spacing.md * 2, (canvas.height - spacing.md * 2) * aspect))
+      : 0;
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -115,15 +170,9 @@ export function EditorScreen({ albumId }: { albumId: string }) {
         keyExtractor={(p) => p.id}
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.strip}
-        style={{ flexGrow: 0 }}
+        style={styles.stripContainer}
         renderItem={({ item, index }) => (
-          <Pressable
-            onPress={() => {
-              setPageIndex(index);
-              setSelectedSlot(undefined);
-            }}
-            style={[styles.stripItem, index === pageIndex && styles.stripItemSelected]}
-          >
+          <Pressable onPress={() => goToPage(index)} style={[styles.stripItem, index === safeIndex && styles.stripItemSelected]}>
             <PageView album={album} page={item} width={64} compact />
             <Text style={styles.stripLabel}>{index + 1}</Text>
           </Pressable>
@@ -135,27 +184,52 @@ export function EditorScreen({ albumId }: { albumId: string }) {
         }
       />
 
-      <ScrollView contentContainerStyle={styles.canvas}>
-        {page ? (
-          <View style={styles.pageShadow}>
-            <PageView
-              album={album}
-              page={page}
-              width={pageWidth}
-              selectedSlotId={selectedSlot}
-              onSlotPress={onSlotPress}
-              onTransformChange={(slotId, t) => editor.setTransform(page.id, slotId, t)}
-            />
-          </View>
-        ) : (
+      <View style={styles.canvas} onLayout={onCanvasLayout}>
+        {pageCount === 0 ? (
           <Text style={styles.hint}>Ajoutez une page avec « + ».</Text>
-        )}
-        <Text style={styles.hint}>
-          {selectedSlot ? 'Glissez pour recadrer, pincez pour zoomer.' : 'Touchez une zone pour y placer une photo ou un texte.'}
-        </Text>
-      </ScrollView>
+        ) : canvas.width > 0 ? (
+          <FlatList
+            ref={pager}
+            data={album.pages}
+            keyExtractor={(p) => p.id}
+            horizontal
+            pagingEnabled
+            showsHorizontalScrollIndicator={false}
+            // Le glissement de page ne doit pas concurrencer le recadrage d'une
+            // photo sélectionnée.
+            scrollEnabled={selectedSlot === undefined}
+            onMomentumScrollEnd={onPagerSettled}
+            getItemLayout={(_, index) => ({ length: canvas.width, offset: canvas.width * index, index })}
+            onScrollToIndexFailed={() => undefined}
+            windowSize={3}
+            initialNumToRender={1}
+            maxToRenderPerBatch={2}
+            renderItem={({ item }) => (
+              <View style={[styles.pageSlide, { width: canvas.width }]}>
+                <View style={styles.pageShadow}>
+                  <PageView
+                    album={album}
+                    page={item}
+                    width={pageWidth}
+                    {...(item.id === page?.id && selectedSlot ? { selectedSlotId: selectedSlot } : {})}
+                    onSlotPress={onSlotPress}
+                    onTransformChange={(slotId, t) => editor.setTransform(item.id, slotId, t)}
+                  />
+                </View>
+              </View>
+            )}
+          />
+        ) : null}
+      </View>
 
-      {showTemplates && page && <TemplatePicker page={album.page} selectedId={page.templateId} onSelect={(t) => editor.changeTemplate(page.id, t.id)} />}
+      <Text style={styles.hint}>
+        {pageCount > 0 ? `Page ${safeIndex + 1} / ${pageCount} · ` : ''}
+        {selectedSlot ? 'Glissez pour recadrer, pincez pour zoomer.' : 'Balayez pour changer de page, touchez une zone pour la modifier.'}
+      </Text>
+
+      {showTemplates && page ? (
+        <TemplatePicker page={album.page} selectedId={page.templateId} onSelect={(t) => editor.changeTemplate(page.id, t.id)} />
+      ) : null}
 
       <View style={styles.toolbar}>
         <Button title={showTemplates ? 'Masquer' : 'Gabarit'} variant="secondary" onPress={() => setShowTemplates((v) => !v)} style={styles.tool} />
@@ -185,7 +259,9 @@ export function EditorScreen({ albumId }: { albumId: string }) {
       <Modal visible={textFor !== null || editingTitle} transparent animationType="fade" onRequestClose={() => (setTextFor(null), setEditingTitle(false))}>
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{editingTitle ? "Titre de l'album" : template?.slots.find((s) => s.id === textFor?.slotId)?.id === 'title' ? 'Titre' : 'Légende'}</Text>
+            <Text style={styles.modalTitle}>
+              {editingTitle ? "Titre de l'album" : textFor?.slotId === 'title' ? 'Titre' : 'Légende'}
+            </Text>
             <TextInput
               autoFocus
               multiline={!editingTitle}
@@ -215,27 +291,29 @@ export function EditorScreen({ albumId }: { albumId: string }) {
         </KeyboardAvoidingView>
       </Modal>
 
-      {importing && (
+      {importing ? (
         <View style={styles.overlay}>
           <ActivityIndicator color={colors.primaryText} size="large" />
           <Text style={{ color: colors.primaryText, marginTop: spacing.sm }}>Import de la photo…</Text>
         </View>
-      )}
+      ) : null}
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: colors.background },
+  stripContainer: { flexGrow: 0 },
   strip: { paddingHorizontal: spacing.md, paddingVertical: spacing.sm, gap: spacing.sm, alignItems: 'flex-end' },
   stripItem: { alignItems: 'center', padding: 3, borderRadius: radius.sm, borderWidth: 2, borderColor: 'transparent' },
   stripItemSelected: { borderColor: colors.primary },
   stripLabel: { fontSize: 10, color: colors.muted, marginTop: 2 },
   stripAdd: { width: 70, height: 84, alignItems: 'center', justifyContent: 'center', backgroundColor: colors.surface, borderColor: colors.border },
   stripAddText: { fontSize: 24, color: colors.muted },
-  canvas: { padding: spacing.md, alignItems: 'center', gap: spacing.md },
+  canvas: { flex: 1 },
+  pageSlide: { alignItems: 'center', justifyContent: 'center' },
   pageShadow: { shadowColor: '#000', shadowOpacity: 0.15, shadowRadius: 8, shadowOffset: { width: 0, height: 4 }, elevation: 4, backgroundColor: colors.surface },
-  hint: { color: colors.muted, fontSize: 13, textAlign: 'center' },
+  hint: { color: colors.muted, fontSize: 13, textAlign: 'center', paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
   toolbar: { flexDirection: 'row', gap: spacing.sm, padding: spacing.md, backgroundColor: colors.surface, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.border },
   tool: { flex: 1, paddingHorizontal: spacing.sm },
   modalBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', padding: spacing.lg },

@@ -62,10 +62,11 @@ src/navigation.tsx            navigation sans dépendance
 src/storage/albumStore.ts     bundles <documents>/albums/<id>.album/ (album.json, photos/, thumbs/)
 src/hooks/useAlbumEditor.ts   état immuable + sauvegarde automatique
 src/components/PageView.tsx   rendu d'une page conforme au format (+ gestes de recadrage/zoom)
+src/services/faceThumbnails.ts vignettes de visage recadrées pour l'assistant
 src/components/…              gabarits, sélecteur de photos, carte personne, UI
 src/screens/HomeScreen.tsx    liste des albums
-src/screens/EditorScreen.tsx  éditeur : gabarits, placement, zoom, textes, pages
-src/screens/WizardScreen.tsx  assistant IA : parcours → personnes → style → génération
+src/screens/EditorScreen.tsx  éditeur : carrousel de pages, gabarits, placement, zoom, textes
+src/screens/WizardScreen.tsx  assistant IA : parcours → personnes (fusion possible) → style → génération
 src/screens/DiagnosticsScreen.tsx  état des modules natifs et journal partageable
 src/diagnostics/              journal disque, détection de plantage au démarrage, écran de secours
 src/services/                 adaptateurs natifs des « ports » définis dans @albumphoto/core

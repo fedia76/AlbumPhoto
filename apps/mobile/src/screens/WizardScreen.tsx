@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
@@ -6,6 +6,7 @@ import {
   assembleAlbum,
   detectPeople,
   generateCaptions,
+  mergeClusters,
   scanPhotos,
   selectBestPhotos,
   type CaptionStyle,
@@ -16,7 +17,9 @@ import { APP_GENERATOR, DEFAULT_SCAN_LIMIT } from '../config';
 import { useNavigation } from '../navigation';
 import { createAdapters, ensureMediaPermission, type AppAdapters } from '../services';
 import type { CaptionEngine } from '../services/captioner';
+import { renderFaceThumbnail } from '../services/faceThumbnails';
 import { saveAlbum } from '../storage/albumStore';
+import { log } from '../diagnostics/log';
 import { colors, radius, spacing } from '../theme';
 import { Button, Chip, Header, ProgressBar } from '../components/ui';
 import { PersonCard } from '../components/PersonCard';
@@ -33,6 +36,9 @@ const STYLE_LABELS: Record<CaptionStyle, string> = {
 
 const LOCALE = 'fr-FR';
 
+/** Nom attribué d'office : il ne doit pas gagner sur un nom saisi à la fusion. */
+const DEFAULT_NAME = /^Personne \d+$/;
+
 /** Assistant IA locale : parcours → personnes → style → génération. */
 export function WizardScreen() {
   const nav = useNavigation();
@@ -48,10 +54,19 @@ export function WizardScreen() {
   const [clusters, setClusters] = useState<PersonCluster[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [names, setNames] = useState<Map<string, string>>(new Map());
+  const [faceThumbs, setFaceThumbs] = useState<Map<string, string>>(new Map());
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergePick, setMergePick] = useState<Set<string>>(new Set());
   const adaptersRef = useRef<AppAdapters | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  /** Nombre de photos distinctes par personne, recalculé seulement si besoin. */
+  const photoCountByCluster = useMemo(
+    () => new Map(clusters.map((c) => [c.id, new Set(c.members.map((m) => m.photoId)).size])),
+    [clusters],
+  );
 
   const fail = (e: unknown) => {
     Alert.alert('Erreur', (e as Error).message ?? String(e));
@@ -86,11 +101,89 @@ export function WizardScreen() {
       setClusters(found);
       setSelected(new Set(found.slice(0, 4).map((c) => c.id)));
       setNames(new Map(found.map((c, i) => [c.id, `Personne ${i + 1}`])));
+      setFaceThumbs(await buildFaceThumbnails(found, result));
       setStep('people');
     } catch (e) {
       fail(e);
     }
   };
+
+  /** Prépare une petite vignette par personne : indispensable à la fluidité. */
+  const buildFaceThumbnails = async (found: PersonCluster[], all: PhotoAnalysis[]): Promise<Map<string, string>> => {
+    const byId = new Map(all.map((a) => [a.photo.id, a]));
+    const thumbs = new Map<string, string>();
+    for (let i = 0; i < found.length; i++) {
+      const cluster = found[i]!;
+      const analysis = byId.get(cluster.representative.photoId);
+      const face = analysis?.faces[cluster.representative.faceIndex];
+      if (analysis && face) {
+        try {
+          thumbs.set(cluster.id, await renderFaceThumbnail(analysis.photo, face.rect));
+        } catch (e) {
+          log('warn', `Vignette de visage impossible pour ${cluster.id}`, e);
+        }
+      }
+      setProgress({ label: `Préparation des visages… ${i + 1} / ${found.length}`, value: (i + 1) / found.length });
+    }
+    return thumbs;
+  };
+
+  const toggleFace = useCallback(
+    (id: string) => {
+      if (mergeMode) {
+        setMergePick((picked) => {
+          const next = new Set(picked);
+          if (next.has(id)) next.delete(id);
+          else next.add(id);
+          return next;
+        });
+        return;
+      }
+      setSelected((current) => {
+        const next = new Set(current);
+        if (next.has(id)) next.delete(id);
+        else next.add(id);
+        return next;
+      });
+    },
+    [mergeMode],
+  );
+
+  const renameFace = useCallback((id: string, value: string) => {
+    setNames((current) => new Map(current).set(id, value));
+  }, []);
+
+  const cancelMerge = useCallback(() => {
+    setMergeMode(false);
+    setMergePick(new Set());
+  }, []);
+
+  /** Réunit les visages choisis en une seule personne. */
+  const applyMerge = useCallback(() => {
+    const ids = [...mergePick];
+    if (ids.length < 2) return;
+    const next = mergeClusters(clusters, ids);
+    const survivor = next.find((c) => mergePick.has(c.id));
+    setClusters(next);
+    if (survivor) {
+      // On conserve le prénom saisi par l'utilisateur s'il y en a un.
+      const given = ids.map((id) => names.get(id) ?? '').find((n) => n.trim() && !DEFAULT_NAME.test(n.trim()));
+      setNames((current) => {
+        const copy = new Map(current);
+        if (given) copy.set(survivor.id, given);
+        for (const id of ids) if (id !== survivor.id) copy.delete(id);
+        return copy;
+      });
+      setSelected((current) => {
+        const copy = new Set(current);
+        const wasSelected = ids.some((id) => current.has(id));
+        for (const id of ids) copy.delete(id);
+        if (wasSelected) copy.add(survivor.id);
+        return copy;
+      });
+    }
+    cancelMerge();
+  }, [cancelMerge, clusters, mergePick, names]);
 
   const generate = async () => {
     const adapters = adaptersRef.current;
@@ -179,40 +272,39 @@ export function WizardScreen() {
             <Text style={styles.lead}>
               {clusters.length === 0
                 ? "Aucune personne récurrente n'a été détectée. L'album sera composé des meilleures photos."
-                : 'Qui doit figurer dans l\'album ? Touchez un visage pour le sélectionner et donnez-lui un prénom (utile pour les légendes).'}
+                : mergeMode
+                  ? 'Touchez deux visages (ou plus) qui sont la même personne, puis validez la fusion.'
+                  : 'Qui doit figurer dans l\'album ? Touchez un visage pour le sélectionner et donnez-lui un prénom (utile pour les légendes).'}
             </Text>
             <View style={styles.people}>
-              {clusters.map((c) => {
-                const a = analyses.find((x) => x.photo.id === c.representative.photoId);
-                const face = a?.faces[c.representative.faceIndex];
-                if (!a || !face) return null;
-                return (
-                  <PersonCard
-                    key={c.id}
-                    uri={a.photo.uri}
-                    faceRect={face.rect}
-                    photoWidth={a.photo.width}
-                    photoHeight={a.photo.height}
-                    count={new Set(c.members.map((m) => m.photoId)).size}
-                    name={names.get(c.id) ?? ''}
-                    selected={selected.has(c.id)}
-                    onToggle={() =>
-                      setSelected((s) => {
-                        const next = new Set(s);
-                        if (next.has(c.id)) next.delete(c.id);
-                        else next.add(c.id);
-                        return next;
-                      })
-                    }
-                    onNameChange={(n) => setNames((m) => new Map(m).set(c.id, n))}
-                  />
-                );
-              })}
+              {clusters.map((c) => (
+                <PersonCard
+                  key={c.id}
+                  id={c.id}
+                  {...(faceThumbs.get(c.id) ? { uri: faceThumbs.get(c.id) } : {})}
+                  count={photoCountByCluster.get(c.id) ?? 0}
+                  name={names.get(c.id) ?? ''}
+                  selected={mergeMode ? mergePick.has(c.id) : selected.has(c.id)}
+                  mergeMode={mergeMode}
+                  onToggle={toggleFace}
+                  onNameChange={renameFace}
+                />
+              ))}
             </View>
+            {clusters.length > 1 ? (
+              mergeMode ? (
+                <>
+                  <Button title={`Fusionner (${mergePick.size})`} onPress={applyMerge} disabled={mergePick.size < 2} />
+                  <Button title="Annuler la fusion" variant="ghost" onPress={cancelMerge} />
+                </>
+              ) : (
+                <Button title="Un même visage en double ? Fusionner" variant="secondary" onPress={() => setMergeMode(true)} />
+              )
+            ) : null}
             <Text style={styles.hint}>
               {analyses.length} photos analysées · {analyses.filter((a) => a.faces.length > 0).length} avec des visages
             </Text>
-            <Button title="Continuer" onPress={() => setStep('style')} />
+            {!mergeMode ? <Button title="Continuer" onPress={() => setStep('style')} /> : null}
           </>
         )}
 
