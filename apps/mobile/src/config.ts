@@ -29,3 +29,10 @@ export const DEFAULT_SCAN_LIMIT = 600;
 export const SCAN_LIMIT_PRESETS = [200, 600, 1500] as const;
 /** Borne haute de la saisie libre : au-delà, l'analyse deviendrait interminable. */
 export const MAX_SCAN_LIMIT = 20_000;
+
+/**
+ * Délai maximal accordé à une légende avant de passer au gabarit (ms). Le
+ * générateur local s'interrompt bien avant ; ce garde-fou ne sert que si le
+ * moteur natif cesse de répondre, pour que l'assistant ne reste pas figé.
+ */
+export const CAPTION_TIMEOUT_MS = 75_000;

@@ -4,8 +4,10 @@ import {
   TemplateCaptionGenerator,
   buildCaptionPrompt,
   generateTemplateCaption,
+  hasEnoughText,
   joinNames,
   sanitizeCaption,
+  stripThinking,
   timeOfDayFromIso,
   type CaptionContext,
 } from '../src';
@@ -73,6 +75,26 @@ describe('captions', () => {
     const long = sanitizeCaption('a'.repeat(50) + ' ' + 'b'.repeat(50), 60);
     expect(long.length).toBeLessThanOrEqual(61);
     expect(long.endsWith('…')).toBe(true);
+  });
+
+  it('strips thinking blocks, closed or still open', () => {
+    expect(stripThinking('<think>Hmm…</think>\nUn grand moment')).toBe('Un grand moment');
+    // Génération en cours : le bloc n'est pas encore refermé, rien n'est visible.
+    expect(stripThinking('<think>Je réfléchis')).toBe('');
+    expect(stripThinking('Un grand moment')).toBe('Un grand moment');
+  });
+
+  it('knows when the model has written enough to stop it', () => {
+    // Rien encore, ou seulement de la réflexion : il faut le laisser travailler.
+    expect(hasEnoughText('')).toBe(false);
+    expect(hasEnoughText('<think>' + 'a'.repeat(200))).toBe(false);
+    expect(hasEnoughText('Un grand moment')).toBe(false);
+    // Une première ligne complète suffit : la suite n'est que digression.
+    expect(hasEnoughText('Un grand moment\nExplication…')).toBe(true);
+    expect(hasEnoughText('<think>Hmm</think>\nUn grand moment\nEt encore')).toBe(true);
+    // Un modèle qui part en boucle est coupé sur la longueur.
+    expect(hasEnoughText('a'.repeat(600), 90)).toBe(true);
+    expect(hasEnoughText('<think>' + 'a'.repeat(3000))).toBe(true);
   });
 
   it('derives helpers', () => {

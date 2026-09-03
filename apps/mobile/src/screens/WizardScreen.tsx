@@ -10,13 +10,14 @@ import {
   scanPhotos,
   selectBestPhotos,
   type CaptionStyle,
+  type CaptionDiagnostic,
   type PersonCluster,
   type PhotoAnalysis,
 } from '@albumphoto/core';
-import { APP_GENERATOR, DEFAULT_SCAN_LIMIT, MAX_SCAN_LIMIT, SCAN_LIMIT_PRESETS } from '../config';
+import { APP_GENERATOR, CAPTION_TIMEOUT_MS, DEFAULT_SCAN_LIMIT, MAX_SCAN_LIMIT, SCAN_LIMIT_PRESETS } from '../config';
 import { useNavigation } from '../navigation';
 import { createAdapters, ensureMediaPermission, type AppAdapters } from '../services';
-import type { CaptionEngine } from '../services/captioner';
+import type { CaptionActivity, CaptionEngine } from '../services/captioner';
 import { renderFaceThumbnail } from '../services/faceThumbnails';
 import { saveAlbum } from '../storage/albumStore';
 import { log } from '../diagnostics/log';
@@ -61,6 +62,10 @@ export function WizardScreen() {
   const [mergePick, setMergePick] = useState<Set<string>>(new Set());
   const adaptersRef = useRef<AppAdapters | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  /** Dernier avancement des légendes, pour l'enrichir des signes de vie. */
+  const captionProgressRef = useRef({ done: 0, total: 0 });
+  /** Avancement du téléchargement du modèle de légendes (1 = terminé). */
+  const modelDownloadRef = useRef(1);
 
   useEffect(() => () => abortRef.current?.abort(), []);
 
@@ -88,8 +93,51 @@ export function WizardScreen() {
   );
 
   const fail = (e: unknown) => {
+    log('error', "Échec de l'assistant", e);
     Alert.alert('Erreur', (e as Error).message ?? String(e));
     setStep('intro');
+  };
+
+  /** Étiquette de l'étape des légendes : la photo en cours, pas la dernière finie. */
+  const captionLabel = (detail?: string) => {
+    const { done, total } = captionProgressRef.current;
+    const photo = Math.min(done + 1, Math.max(total, 1));
+    return `Rédaction des légendes… ${photo} / ${total || '?'}${detail ? ` — ${detail}` : ''}`;
+  };
+
+  const captionValue = () => {
+    const { done, total } = captionProgressRef.current;
+    return 0.1 + (0.5 * done) / Math.max(1, total);
+  };
+
+  /**
+   * Le modèle écrit lentement, une légende peut demander une minute : sans ce
+   * compte-rendu (caractères produits, secondes écoulées) une génération longue
+   * ne se distingue pas d'une génération bloquée.
+   */
+  const showCaptionActivity = (a: CaptionActivity) => {
+    const elapsed = `${Math.round(a.elapsedMs / 1000)} s`;
+    if (a.phase === 'generating') {
+      setProgress({ label: captionLabel(`${a.chars} caractères, ${elapsed}`), value: captionValue() });
+      return;
+    }
+    // Le modèle est téléchargé puis chargé à la première légende : c'est la
+    // plus longue attente de l'assistant, elle doit rester lisible.
+    const download = modelDownloadRef.current;
+    const detail = download < 1 ? `téléchargement du modèle ${Math.round(download * 100)} %` : `préparation du modèle, ${elapsed}`;
+    setProgress({ label: captionLabel(detail), value: download < 1 ? 0.05 + 0.05 * download : captionValue() });
+  };
+
+  /** Motif inscrit au journal pour chaque légende qui n'a pas abouti. */
+  const logCaption = (d: CaptionDiagnostic) => {
+    if (d.outcome === 'ok') return;
+    const reason: Record<Exclude<CaptionDiagnostic['outcome'], 'ok'>, string> = {
+      empty: 'réponse vide',
+      error: 'erreur du générateur',
+      timeout: `aucune réponse en ${Math.round(d.elapsedMs / 1000)} s, gabarit utilisé`,
+      abandoned: 'générateur abandonné, gabarit utilisé',
+    };
+    log('warn', `Légende ${d.index}/${d.total} (${d.photoId}) : ${reason[d.outcome]}`, d.error);
   };
 
   const startScan = async () => {
@@ -106,7 +154,13 @@ export function WizardScreen() {
         locale: LOCALE,
         captionEngine: engine,
         onFaceModelDownload: (p) => setProgress({ label: p < 1 ? 'Téléchargement du modèle de reconnaissance des visages (14 Mo)…' : 'Modèle de reconnaissance prêt.', value: p }),
-        onModelDownload: (p) => setProgress({ label: `Téléchargement du modèle de légendes… ${Math.round(p * 100)} %`, value: p }),
+        // Le modèle n'est téléchargé qu'à la première légende : l'étiquette
+        // reste donc celle de l'étape des légendes.
+        onModelDownload: (p) => {
+          modelDownloadRef.current = p;
+          setProgress({ label: captionLabel(`téléchargement du modèle ${Math.round(p * 100)} %`), value: 0.05 + 0.05 * p });
+        },
+        onCaptionActivity: showCaptionActivity,
       });
       adaptersRef.current = adapters;
       const result = await scanPhotos(adapters, {
@@ -219,6 +273,9 @@ export function WizardScreen() {
         setStep('style');
         return;
       }
+      captionProgressRef.current = { done: 0, total: chosen.length };
+      log('info', `Légendes : ${chosen.length} photos, moteur « ${adapters.captions.name} », style ${style}.`);
+      const captionsStartedAt = Date.now();
       const captions = await generateCaptions(adapters.captions, events, byPhoto, {
         style,
         locale: LOCALE,
@@ -226,9 +283,19 @@ export function WizardScreen() {
         personNames: names,
         selectedPeople: selected,
         signal: abort.signal,
-        onProgress: (p) => setProgress({ label: `Rédaction des légendes… ${p.done} / ${p.total}`, value: 0.1 + (0.5 * p.done) / Math.max(1, p.total) }),
+        timeoutMs: CAPTION_TIMEOUT_MS,
+        onDiagnostic: logCaption,
+        onProgress: (p) => {
+          captionProgressRef.current = { done: p.done, total: p.total };
+          setProgress({ label: captionLabel(), value: captionValue() });
+        },
       });
       if (abort.signal.aborted) return;
+      const captionStats = adapters.captions as { summary?: () => string };
+      log(
+        'info',
+        `Légendes terminées en ${Math.round((Date.now() - captionsStartedAt) / 1000)} s : ${captions.size}/${chosen.length} écrites${captionStats.summary ? ` (${captionStats.summary()})` : ''}.`,
+      );
       const album = await assembleAlbum(adapters.importer, {
         title,
         subtitle: subtitle || undefined,
@@ -250,7 +317,9 @@ export function WizardScreen() {
       if (reason) {
         Alert.alert(
           'Légendes écrites sans le modèle',
-          `Le modèle de langage local n'a pas pu être utilisé :\n${reason}\n\nLes légendes viennent des gabarits intégrés.`,
+          `Le modèle de langage local n'a pas pu être utilisé jusqu'au bout :\n${reason}\n\n${
+            captionStats.summary ? `${captionStats.summary()}.\n\n` : ''
+          }Le détail est dans l'écran « Diagnostic ».`,
         );
       }
       nav.replace({ name: 'editor', albumId: album.id });
@@ -351,7 +420,13 @@ export function WizardScreen() {
         {(step === 'scanning' || step === 'generating') && (
           <View style={{ gap: spacing.lg, paddingTop: spacing.xl }}>
             <ProgressBar value={progress.value} label={progress.label} />
-            <Text style={styles.hint}>{step === 'scanning' ? 'Visages, netteté et contenu sont analysés localement. Vous pouvez laisser l\'écran ouvert.' : 'Composition de l\'album…'}</Text>
+            <Text style={styles.hint}>
+              {step === 'scanning'
+                ? 'Visages, netteté et contenu sont analysés localement. Vous pouvez laisser l\'écran ouvert.'
+                : engine === 'llm'
+                  ? 'Le modèle écrit chaque légende sur l\'appareil : comptez plusieurs dizaines de secondes par photo. Le compteur ci-dessus avance tant qu\'il travaille ; « Annuler » reste possible.'
+                  : 'Composition de l\'album…'}
+            </Text>
           </View>
         )}
 
