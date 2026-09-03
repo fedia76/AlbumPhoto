@@ -5,6 +5,12 @@
  */
 import { Platform } from 'react-native';
 import { describeError } from './log';
+import {
+  isExecutorchLinked,
+  isMlKitFaceDetectionLinked,
+  isMlKitImageLabelingLinked,
+  isOnnxRuntimeLinked,
+} from '../services/nativeAvailability';
 
 export interface ProbeResult {
   name: string;
@@ -44,18 +50,25 @@ export function runProbes(): ProbeResult[] {
       return typeof jpeg.decode === 'function' ? 'disponible' : 'API inattendue';
     }),
     probe('@react-native-ml-kit/face-detection', 'Détection des visages', false, () => {
+      if (!isMlKitFaceDetectionLinked()) throw new Error('module natif non lié');
       const mod = require('@react-native-ml-kit/face-detection') as { default?: { detect?: unknown } };
       return typeof mod.default?.detect === 'function' ? 'disponible' : 'API inattendue';
     }),
     probe('@react-native-ml-kit/image-labeling', 'Étiquettes de contenu', false, () => {
+      if (!isMlKitImageLabelingLinked()) throw new Error('module natif non lié');
       const mod = require('@react-native-ml-kit/image-labeling') as { default?: { label?: unknown } };
       return typeof mod.default?.label === 'function' ? 'disponible' : 'API inattendue';
     }),
+    // Ces deux modules lèvent une exception *pendant leur évaluation* quand leur
+    // partie native manque : on ne les importe qu'après l'avoir vérifiée, sinon
+    // Metro transforme l'erreur en plantage fatal impossible à rattraper.
     probe('onnxruntime-react-native', 'Reconnaissance des personnes', false, () => {
+      if (!isOnnxRuntimeLinked()) throw new Error('module natif non lié (NativeModules.Onnxruntime absent)');
       const ort = require('onnxruntime-react-native') as { InferenceSession?: { create?: unknown } };
       return typeof ort.InferenceSession?.create === 'function' ? 'disponible' : 'API inattendue';
     }),
     probe('react-native-executorch', 'Légendes par LLM local', false, () => {
+      if (!isExecutorchLinked()) throw new Error('module natif non lié (ETInstaller absent)');
       const rne = require('react-native-executorch') as { isAvailable?: boolean };
       return rne.isAvailable ? 'disponible' : 'runtime natif absent (repli sur les gabarits)';
     }),

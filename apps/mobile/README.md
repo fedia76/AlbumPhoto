@@ -40,6 +40,20 @@ Les modules natifs d'IA (ML Kit, ONNX Runtime, ExecuTorch) sont chargés
 **paresseusement**, au moment de l'analyse : un module absent dégrade la
 fonctionnalité concernée au lieu d'empêcher l'application de démarrer.
 
+Un `try/catch` autour d'un `require` ne suffit pas : quand un module lève une
+exception pendant son évaluation, Metro ne la propage pas à l'appelant mais la
+signale comme erreur fatale (`guardedLoadModule` appelle
+`ErrorUtils.reportFatalError`). C'est pourquoi `src/services/nativeAvailability.ts`
+vérifie la présence du module natif (`NativeModules` / `TurboModuleRegistry`)
+**avant** tout import de `onnxruntime-react-native` et `react-native-executorch`,
+qui touchent tous deux leur partie native dès le chargement.
+
+`onnxruntime-react-native` embarque par ailleurs un `unimodule.json` hérité qui le
+fait passer pour un module Expo : l'autolinking renonce alors à le lier des deux
+côtés, si bien qu'il compile mais que `OnnxruntimePackage` n'atteint jamais
+`PackageList`. Le script `scripts/patch-native-deps.js` (postinstall) retire ce
+fichier pour rétablir l'autolinking React Native standard.
+
 ## Architecture
 
 ```

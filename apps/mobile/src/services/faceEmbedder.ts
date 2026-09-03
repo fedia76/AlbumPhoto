@@ -13,14 +13,19 @@ import { ANALYSIS_THUMBNAIL, FACE_MODEL_CLUSTER_THRESHOLD, FACE_MODEL_FILENAME, 
 import { resolveFileUri } from './fileUri';
 import { decodeJpegBase64, renderJpegBase64 } from './pixels';
 import { log } from '../diagnostics/log';
+import { isOnnxRuntimeLinked } from './nativeAvailability';
 
 type OnnxModule = typeof import('onnxruntime-react-native');
 
 /**
- * Chargement paresseux d'ONNX Runtime : son import exécute `install()` sur le
- * module natif, ce qui fermerait l'application au démarrage en cas d'échec.
+ * Chargement paresseux d'ONNX Runtime, précédé d'une vérification du module
+ * natif : son import exécute `install()` dessus, et une exception à
+ * l'évaluation d'un module est fatale (voir `nativeAvailability`).
  */
 function loadOnnx(): OnnxModule {
+  if (!isOnnxRuntimeLinked()) {
+    throw new Error("ONNX Runtime n'est pas lié dans cette version de l'application.");
+  }
   const mod = require('onnxruntime-react-native') as OnnxModule;
   if (typeof mod.InferenceSession?.create !== 'function') {
     throw new Error("ONNX Runtime n'est pas disponible sur cet appareil.");

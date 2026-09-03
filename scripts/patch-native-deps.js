@@ -6,6 +6,11 @@
  * 1. onnxruntime-react-native : son build.gradle utilise `VersionNumber`
  *    (org.gradle.util), supprimé dans Gradle 9 (React Native 0.86+), et
  *    `$buildDir`, déprécié. Le bloc concerné ne sert qu'aux RN < 0.71.
+ * 2. onnxruntime-react-native : son `unimodule.json` hérité (Expo SDK < 40) le
+ *    fait passer pour un module Expo. L'autolinking refuse alors de le lier des
+ *    deux côtés — il compile mais `OnnxruntimePackage` n'atteint jamais
+ *    `PackageList`, et `NativeModules.Onnxruntime` vaut `null` à l'exécution.
+ *    Le retirer rétablit l'autolinking React Native standard.
  */
 const fs = require('fs');
 const path = require('path');
@@ -32,6 +37,19 @@ function patch(file, edits) {
     console.log(`[patch-native-deps] ${file} : ${changed} correctif(s) appliqué(s).`);
   }
 }
+
+/** Supprime un fichier d'une dépendance, s'il existe. */
+function removeFile(file, why) {
+  const abs = path.join(__dirname, '..', 'node_modules', file);
+  if (!fs.existsSync(abs)) return; // déjà retiré, ou dépendance absente
+  fs.rmSync(abs);
+  console.log(`[patch-native-deps] ${file} supprimé (${why}).`);
+}
+
+removeFile(
+  'onnxruntime-react-native/unimodule.json',
+  "sinon l'autolinking le prend pour un module Expo et n'enregistre pas OnnxruntimePackage",
+);
 
 patch('onnxruntime-react-native/android/build.gradle', [
   {

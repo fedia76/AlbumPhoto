@@ -7,6 +7,7 @@ import {
   type CaptionRequest,
 } from '@albumphoto/core';
 import { log } from '../diagnostics/log';
+import { isExecutorchLinked } from './nativeAvailability';
 
 type ExecutorchModule = typeof import('react-native-executorch');
 
@@ -14,11 +15,14 @@ type ExecutorchModule = typeof import('react-native-executorch');
 const LLM_MODEL_NAME = 'qwen3-0.6b-quantized';
 
 /**
- * Chargement paresseux de react-native-executorch. Son import lève une
- * exception quand le runtime natif est absent (émulateur, ABI non gérée) :
- * s'il était importé au démarrage, l'application se fermerait aussitôt.
+ * Chargement paresseux de react-native-executorch, précédé d'une vérification
+ * du module natif : son import lève une exception quand le runtime est absent
+ * (ABI non gérée), et une telle exception est fatale (voir `nativeAvailability`).
  */
 function loadExecutorch(): ExecutorchModule {
+  if (!isExecutorchLinked()) {
+    throw new Error("Le module natif ExecuTorch n'est pas disponible sur cet appareil.");
+  }
   const mod = require('react-native-executorch') as ExecutorchModule;
   if (!mod.isAvailable) {
     throw new Error("Le runtime ExecuTorch n'est pas disponible sur cet appareil.");
