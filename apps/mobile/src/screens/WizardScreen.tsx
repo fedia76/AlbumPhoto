@@ -59,8 +59,8 @@ const ENGINE_HINTS: Record<CaptionEngine, string> = {
 const DEFAULT_NAME = /^Personne \d+$/;
 
 /** Ajoute ou retire une valeur d'un ensemble, sans le modifier sur place. */
-function toggleMembership(set: ReadonlySet<string>, value: string, member: boolean): Set<string> {
-  if (set.has(value) === member) return set as Set<string>;
+function toggleMembership(set: Set<string>, value: string, member: boolean): Set<string> {
+  if (set.has(value) === member) return set;
   const next = new Set(set);
   if (member) next.add(value);
   else next.delete(value);
