@@ -25,6 +25,12 @@ export interface SourcePhoto {
   location?: { latitude: number; longitude: number };
   mimeType?: string;
   fileName?: string;
+  /**
+   * Sous-types déclarés par la photothèque (`screenshot`, `panorama`, `hdr`…).
+   * iOS les fournit sans coût ; c'est le signal le plus sûr pour reconnaître
+   * une capture d'écran.
+   */
+  mediaSubtypes?: string[];
 }
 
 /** Visage détecté sur une photo (rectangle normalisé dans la photo). */
@@ -56,6 +62,18 @@ export interface QualityMetrics {
   laplacianVariance: number;
 }
 
+/**
+ * Verdict « est-ce une vraie photo ? ». Une pellicule contient des captures
+ * d'écran, des images enregistrées, des mèmes, des photos de pense-bête : rien
+ * de tout cela n'a sa place dans un album imprimé.
+ */
+export interface AuthenticityVerdict {
+  /** 0 = photo prise par un appareil, 1 = capture d'écran manifeste. */
+  artificiality: number;
+  /** Motifs retenus, du plus déterminant au moins, prêts à être affichés. */
+  reasons: string[];
+}
+
 /** Résultat complet de l'analyse d'une photo par l'IA locale. */
 export interface PhotoAnalysis {
   photo: SourcePhoto;
@@ -63,7 +81,10 @@ export interface PhotoAnalysis {
   quality: QualityMetrics;
   /** dHash hexadécimal 16 caractères. */
   hash: string;
+  /** Étiquettes de contenu, filtrées et traduites, pour les légendes. */
   labels: string[];
+  /** Verdict « vraie photo », absent tant que rien ne l'a calculé. */
+  authenticity?: AuthenticityVerdict;
 }
 
 /** Regroupement de visages jugés être la même personne. */

@@ -5,7 +5,15 @@ import { computeQuality, toGray } from './quality';
 import { dHash } from './phash';
 import { clusterFaces, peopleByPhoto, type ClusterOptions } from './clustering';
 import { scorePhotos, type PhotoScore, type ScoringWeights } from './scoring';
-import { groupIntoEvents, selectPhotos, type PhotoEvent, type RejectedPhoto, type SelectedPhoto } from './selection';
+import {
+  eventsFromBuckets,
+  selectPhotos,
+  type PhotoEvent,
+  type RejectedPhoto,
+  type SelectedPhoto,
+  type SelectionOptions,
+  type TimeBucket,
+} from './selection';
 import type { CaptionDraft, CaptionGenerator, CaptionContext } from './captions/types';
 import { timeOfDayFromIso } from './captions/context';
 import { TemplateCaptionGenerator } from './captions/templateGenerator';
@@ -138,6 +146,25 @@ export interface SelectionParams {
   allowScenery?: boolean;
   eventGapHours?: number;
   locale?: string;
+  /**
+   * Réglages fins de la sélection : quotas par événement, photos imposées ou
+   * refusées, seuils. Sans eux, l'assistant restait cantonné aux valeurs par
+   * défaut : deux photos par moment, quels que soient les moments.
+   */
+  selection?: Omit<SelectionOptions, 'targetCount' | 'eventGapHours'>;
+}
+
+export interface SelectionOutcome {
+  selected: SelectedPhoto[];
+  /** Photos écartées et motif, pour expliquer la sélection à l'utilisateur. */
+  rejected: RejectedPhoto[];
+  events: PhotoEvent[];
+  /** Événements candidats, y compris ceux dont aucune photo n'a été retenue. */
+  eventBuckets: TimeBucket[];
+  /** Moments candidats (rafales). */
+  momentBuckets: TimeBucket[];
+  byPhoto: Map<string, string[]>;
+  scores: PhotoScore[];
 }
 
 /** Étape 3 : scoring et sélection des meilleures photos, regroupées en événements. */
@@ -145,14 +172,7 @@ export function selectBestPhotos(
   analyses: PhotoAnalysis[],
   clusters: PersonCluster[],
   params: SelectionParams,
-): {
-  selected: SelectedPhoto[];
-  /** Photos écartées et motif, pour expliquer la sélection à l'utilisateur. */
-  rejected: RejectedPhoto[];
-  events: PhotoEvent[];
-  byPhoto: Map<string, string[]>;
-  scores: PhotoScore[];
-} {
+): SelectionOutcome {
   const byPhoto = peopleByPhoto(clusters);
   const scores = scorePhotos(analyses, {
     selectedPeople: params.selectedPeople,
@@ -160,9 +180,15 @@ export function selectBestPhotos(
     weights: params.weights,
     allowScenery: params.allowScenery,
   });
-  const { selected, rejected } = selectPhotos(analyses, scores, { targetCount: params.targetCount });
-  const events = groupIntoEvents(selected, params.eventGapHours, params.locale);
-  return { selected, rejected, events, byPhoto, scores };
+  const { selected, rejected, eventBuckets, momentBuckets } = selectPhotos(analyses, scores, {
+    ...params.selection,
+    targetCount: params.targetCount,
+    ...(params.eventGapHours === undefined ? {} : { eventGapHours: params.eventGapHours }),
+  });
+  // Les chapitres suivent les tranches que l'utilisateur a réglées, pas un
+  // nouveau découpage des seules photos retenues.
+  const events = eventsFromBuckets(eventBuckets, selected, params.locale);
+  return { selected, rejected, events, eventBuckets, momentBuckets, byPhoto, scores };
 }
 
 /** Issue d'une légende, pour le journal de diagnostic. */

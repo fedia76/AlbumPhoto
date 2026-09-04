@@ -16,19 +16,25 @@ export interface ScoreExplanation {
 }
 
 const FR_REASONS: Record<RejectionReason, string> = {
+  notPhoto: "Ce n'est pas une photo",
   sharpness: 'Trop floue',
   score: 'Note trop basse',
   duplicate: 'Quasi identique à une photo retenue',
   moment: 'Déjà assez de photos de ce moment',
+  event: 'Ce moment a le nombre de photos demandé',
   quota: 'Album déjà complet',
+  manual: 'Écartée à la main',
 };
 
 const EN_REASONS: Record<RejectionReason, string> = {
+  notPhoto: 'Not a real photo',
   sharpness: 'Too blurry',
   score: 'Score too low',
   duplicate: 'Near-duplicate of a selected photo',
   moment: 'Enough photos from that moment already',
+  event: 'That moment has the requested number of photos',
   quota: 'Album already full',
+  manual: 'Removed by hand',
 };
 
 export function rejectionLabel(reason: RejectionReason, locale = 'fr-FR'): string {
@@ -39,6 +45,10 @@ export function rejectionLabel(reason: RejectionReason, locale = 'fr-FR'): strin
 export function rejectionDetail(reason: RejectionReason, locale = 'fr-FR'): string {
   const fr = locale.startsWith('fr');
   switch (reason) {
+    case 'notPhoto':
+      return fr
+        ? "Capture d'écran, image enregistrée ou document : rien qui soit sorti d'un appareil photo."
+        : 'A screenshot, a saved image or a document: nothing that came out of a camera.';
     case 'sharpness':
       return fr
         ? "La netteté mesurée est sous le seuil : la photo paraîtrait floue une fois imprimée."
@@ -55,10 +65,18 @@ export function rejectionDetail(reason: RejectionReason, locale = 'fr-FR'): stri
       return fr
         ? 'Deux photos du même moment sont déjà retenues, pour varier le récit de l’album.'
         : 'Two photos from the same moment are already in, to keep the album varied.';
+    case 'event':
+      return fr
+        ? 'Ce moment a déjà le nombre de photos que vous lui avez accordé.'
+        : 'That moment already has the number of photos you granted it.';
     case 'quota':
       return fr
         ? "Le nombre de photos demandé était atteint : elle serait entrée avec un album plus grand."
         : 'The requested photo count was reached: a larger album would have included it.';
+    case 'manual':
+      return fr
+        ? "Vous l'avez retirée de l'album."
+        : 'You removed it from the album.';
   }
 }
 
