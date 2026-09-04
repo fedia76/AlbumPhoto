@@ -1,16 +1,19 @@
 import React, { useMemo, useState } from 'react';
 import { FlatList, Pressable, StyleSheet, Text, View } from 'react-native';
 import {
+  UNDATED_BUCKET,
   criterionLabel,
   explainScore,
+  formatEventTitle,
   rejectionDetail,
   rejectionLabel,
   type PhotoEvent,
   type RejectedPhoto,
   type SelectedPhoto,
+  type TimeBucket,
 } from '@albumphoto/core';
 import { SourcePhotoThumb } from './SourcePhotoThumb';
-import { Chip } from './ui';
+import { Chip, Stepper } from './ui';
 import { colors, radius, spacing } from '../theme';
 
 export interface SelectionReviewProps {
@@ -27,10 +30,16 @@ export interface SelectionReviewProps {
   selectedPeople: Set<string>;
   /** Nom du modèle d'identification utilisé (diagnostic). */
   embedderName: string;
+  /** Moments candidats, y compris ceux dont aucune photo n'a été retenue. */
+  eventBuckets: TimeBucket[];
+  /** Nombre de photos imposé par l'utilisateur, par moment. */
+  quotas: ReadonlyMap<string, number>;
+  /** `undefined` rend la main à l'IA pour ce moment. */
+  onQuotaChange: (bucketId: string, quota: number | undefined) => void;
   locale?: string;
 }
 
-type Tab = 'selected' | 'rejected';
+type Tab = 'selected' | 'rejected' | 'moments';
 
 const pct = (v: number): string => `${Math.round(v * 100)}`;
 const THUMB = 84;
@@ -49,6 +58,9 @@ export function SelectionReview({
   personNames,
   selectedPeople,
   embedderName,
+  eventBuckets,
+  quotas,
+  onQuotaChange,
   locale = 'fr-FR',
 }: SelectionReviewProps) {
   const [tab, setTab] = useState<Tab>('selected');
@@ -68,6 +80,13 @@ export function SelectionReview({
     const map = new Map<string, string>();
     for (const event of events) for (const p of event.photos) map.set(p.analysis.photo.id, event.title);
     return map;
+  }, [events]);
+
+  /** Photos retenues par moment : ce que l'IA a décidé, et qu'on peut reprendre. */
+  const keptByBucket = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const event of events) if (event.bucketId) counts.set(event.bucketId, event.photos.length);
+    return counts;
   }, [events]);
 
   const withFaces = useMemo(
@@ -109,9 +128,34 @@ export function SelectionReview({
       <View style={styles.tabs}>
         <Chip label={`Retenues (${selected.length})`} selected={tab === 'selected'} onPress={() => setTab('selected')} />
         <Chip label={`Écartées (${rejected.length})`} selected={tab === 'rejected'} onPress={() => setTab('rejected')} />
+        <Chip label={`Moments (${eventBuckets.length})`} selected={tab === 'moments'} onPress={() => setTab('moments')} />
       </View>
     </View>
   );
+
+  if (tab === 'moments') {
+    return (
+      <FlatList
+        data={eventBuckets}
+        keyExtractor={(item) => item.id}
+        ListHeaderComponent={header}
+        contentContainerStyle={styles.list}
+        initialNumToRender={10}
+        windowSize={5}
+        removeClippedSubviews
+        ListEmptyComponent={<Text style={styles.empty}>Aucun moment : les photos parcourues n'ont pas de date.</Text>}
+        renderItem={({ item }) => (
+          <MomentRow
+            bucket={item}
+            kept={keptByBucket.get(item.id) ?? 0}
+            quota={quotas.get(item.id)}
+            onQuotaChange={onQuotaChange}
+            locale={locale}
+          />
+        )}
+      />
+    );
+  }
 
   if (tab === 'selected') {
     return (
@@ -150,6 +194,69 @@ export function SelectionReview({
       renderItem={({ item }) => <RejectedRow item={item} names={namesOn(item.analysis.photo.id)} locale={locale} />}
     />
   );
+}
+
+/**
+ * Un moment de l'album et la part qu'on lui accorde. Le compteur part de ce
+ * que l'IA a retenu : l'utilisateur corrige une proposition, il ne la refait
+ * pas. Le nombre demandé reste un plafond — les quasi-doublons et les photos
+ * trop floues sont écartés même quand on en réclame davantage.
+ */
+const MomentRow = React.memo(function MomentRow({
+  bucket,
+  kept,
+  quota,
+  onQuotaChange,
+  locale,
+}: {
+  bucket: TimeBucket;
+  kept: number;
+  quota: number | undefined;
+  onQuotaChange: (bucketId: string, quota: number | undefined) => void;
+  locale: string;
+}) {
+  const available = bucket.photoIds.length;
+  const title =
+    bucket.id === UNDATED_BUCKET
+      ? locale.startsWith('fr')
+        ? 'Photos sans date'
+        : 'Undated photos'
+      : formatEventTitle({ title: '', photos: [], ...(bucket.start ? { start: bucket.start } : {}), ...(bucket.end ? { end: bucket.end } : {}) }, locale);
+  const short = bucket.start && bucket.end && bucket.start !== bucket.end ? timeSpan(bucket.start, bucket.end, locale) : '';
+  const unmet = quota !== undefined && kept < quota;
+  return (
+    <View style={styles.card}>
+      <View style={styles.momentRow}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.momentTitle}>{title}</Text>
+          {short ? <Text style={styles.meta}>{short}</Text> : null}
+          <Text style={styles.meta}>
+            {available} photo{available > 1 ? 's' : ''} disponible{available > 1 ? 's' : ''} · {kept} retenue{kept > 1 ? 's' : ''}
+          </Text>
+        </View>
+        <Stepper
+          {...(quota === undefined ? {} : { value: quota })}
+          fallback={kept}
+          max={available}
+          onChange={(next) => onQuotaChange(bucket.id, next)}
+        />
+      </View>
+      {unmet ? (
+        <Text style={styles.momentWarning}>
+          {kept} sur {quota} demandées : les autres sont trop floues, quasi identiques, ou pas de vraies photos.
+        </Text>
+      ) : null}
+    </View>
+  );
+});
+
+/** Plage horaire d'un moment, pour le distinguer d'un autre le même jour. */
+function timeSpan(start: string, end: string, locale: string): string {
+  const fmt = new Intl.DateTimeFormat(locale, { hour: '2-digit', minute: '2-digit', timeZone: 'UTC' });
+  const from = new Date(start);
+  const to = new Date(end);
+  if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) return '';
+  return `${fmt.format(from)} – ${fmt.format(to)}`;
 }
 
 function Stat({ value, label, accent }: { value: string; label: string; accent?: boolean }) {
@@ -330,5 +437,8 @@ const styles = StyleSheet.create({
   plus: { fontWeight: '700' },
   minus: { fontWeight: '700' },
   reasonDetail: { fontSize: 12, color: colors.text, lineHeight: 17 },
+  momentRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  momentTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
+  momentWarning: { fontSize: 12, color: '#a5563a', lineHeight: 17 },
   mono: { fontFamily: 'monospace', fontSize: 10, color: colors.muted },
 });

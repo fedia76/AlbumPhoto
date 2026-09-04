@@ -71,6 +71,12 @@ export function WizardScreen() {
   const [targetCount, setTargetCount] = useState(24);
   /** Écarter captures d'écran, images enregistrées et documents photographiés. */
   const [realPhotosOnly, setRealPhotosOnly] = useState(true);
+  /**
+   * Nombre de photos réclamé pour un moment donné, par clé de tranche. Ces clés
+   * sont des dates : elles survivent au changement de personnes ou de cible, et
+   * les réglages avec elles.
+   */
+  const [quotas, setQuotas] = useState<Map<string, number>>(new Map());
   const [progress, setProgress] = useState<{ label: string; value: number }>({ label: '', value: 0 });
   const [analyses, setAnalyses] = useState<PhotoAnalysis[]>([]);
   const [clusters, setClusters] = useState<PersonCluster[]>([]);
@@ -121,10 +127,23 @@ export function WizardScreen() {
       selectedPeople: selected,
       targetCount,
       locale: LOCALE,
-      // 1 laisse tout passer : le filtre se désactive, il ne s'assouplit pas.
-      selection: { maxArtificiality: realPhotosOnly ? DEFAULT_MAX_ARTIFICIALITY : 1 },
+      selection: {
+        // 1 laisse tout passer : le filtre se désactive, il ne s'assouplit pas.
+        maxArtificiality: realPhotosOnly ? DEFAULT_MAX_ARTIFICIALITY : 1,
+        eventQuotas: quotas,
+      },
     });
-  }, [analyses, clusters, realPhotosOnly, selected, step, targetCount]);
+  }, [analyses, clusters, quotas, realPhotosOnly, selected, step, targetCount]);
+
+  /** Fixe la part d'un moment, ou rend la main à l'IA pour celui-ci. */
+  const changeQuota = useCallback((bucketId: string, quota: number | undefined) => {
+    setQuotas((current) => {
+      const next = new Map(current);
+      if (quota === undefined) next.delete(bucketId);
+      else next.set(bucketId, quota);
+      return next;
+    });
+  }, []);
 
   /** Images jugées non photographiques parmi tout ce qui a été parcouru. */
   const notPhotoCount = useMemo(
@@ -399,13 +418,20 @@ export function WizardScreen() {
               personNames={names}
               selectedPeople={selected}
               embedderName={adaptersRef.current?.embedder.name ?? 'inconnu'}
+              eventBuckets={selection.eventBuckets}
+              quotas={quotas}
+              onQuotaChange={changeQuota}
               locale={LOCALE}
             />
           ) : null}
         </View>
         <View style={styles.footer}>
           <Button
-            title="Continuer vers les légendes"
+            title={
+              selection && selection.selected.length !== targetCount
+                ? `Continuer avec ${selection.selected.length} photos`
+                : 'Continuer vers les légendes'
+            }
             onPress={() => setStep('style')}
             disabled={!selection || selection.selected.length === 0}
           />
