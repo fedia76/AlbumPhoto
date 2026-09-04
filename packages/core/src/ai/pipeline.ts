@@ -1,11 +1,21 @@
 import type { Album, CaptionStyle, Person, Photo } from '../album/types';
 import { newId } from '../album/ids';
 import type { DetectedFace, PersonCluster, PhotoAnalysis, RgbaImage, SourcePhoto } from './types';
+import { assessAuthenticity, declaredScreenshot, type AuthenticitySignals } from './authenticity';
+import { usefulLabels } from './labels';
 import { computeQuality, toGray } from './quality';
 import { dHash } from './phash';
 import { clusterFaces, peopleByPhoto, type ClusterOptions } from './clustering';
 import { scorePhotos, type PhotoScore, type ScoringWeights } from './scoring';
-import { groupIntoEvents, selectPhotos, type PhotoEvent, type RejectedPhoto, type SelectedPhoto } from './selection';
+import {
+  eventsFromBuckets,
+  selectPhotos,
+  type PhotoEvent,
+  type RejectedPhoto,
+  type SelectedPhoto,
+  type SelectionOptions,
+  type TimeBucket,
+} from './selection';
 import type { CaptionDraft, CaptionGenerator, CaptionContext } from './captions/types';
 import { timeOfDayFromIso } from './captions/context';
 import { TemplateCaptionGenerator } from './captions/templateGenerator';
@@ -33,8 +43,35 @@ export interface FaceEmbedder {
   embed(photo: SourcePhoto, faces: DetectedFace[]): Promise<Float32Array[]>;
 }
 
+/** Étiquette de contenu telle que le modèle la rend, avant tout filtrage. */
+export interface LabelHit {
+  /** Libellé du modèle, en anglais. */
+  text: string;
+  confidence?: number;
+}
+
 export interface ImageLabeler {
-  label(photo: SourcePhoto): Promise<string[]>;
+  /**
+   * Étiquettes brutes du modèle. Le tri — écarter les trop générales, traduire
+   * les autres — revient au cœur : les étiquettes qu'une légende rejette
+   * (« text », « font ») sont justement celles qui trahissent une capture
+   * d'écran, il ne faut donc pas les perdre en route.
+   */
+  label(photo: SourcePhoto): Promise<readonly (string | LabelHit)[]>;
+}
+
+/**
+ * Lecture des métadonnées de fichier (EXIF). Facultative et à la demande :
+ * c'est un appel natif de plus par photo, réservé aux cas douteux.
+ */
+export interface PhotoMetadataReader {
+  read(photo: SourcePhoto): Promise<{ make?: string; model?: string }>;
+}
+
+/** Ce que l'appareil sait de lui-même, utile pour juger une image. */
+export interface DeviceContext {
+  /** Résolution de l'écran en pixels : une capture en a exactement la taille. */
+  screen?: { width: number; height: number };
 }
 
 /** Importe une photo source dans le bundle d'un album ; renvoie la `Photo` du format. */
@@ -48,6 +85,9 @@ export interface PipelineAdapters {
   faces: FaceDetector;
   embedder: FaceEmbedder;
   labeler?: ImageLabeler;
+  /** Lecteur d'EXIF, pour distinguer une vraie photo d'une image enregistrée. */
+  metadata?: PhotoMetadataReader;
+  device?: DeviceContext;
   captions: CaptionGenerator;
   importer: PhotoImporter;
 }
@@ -81,6 +121,8 @@ export interface ScanOptions {
   after?: string;
   before?: string;
   thumbnailSize?: number;
+  /** Langue des étiquettes de contenu retenues pour les légendes. */
+  locale?: string;
   onProgress?: ProgressCallback;
   signal?: AbortSignal;
 }
@@ -93,7 +135,7 @@ export async function scanPhotos(adapters: PipelineAdapters, opts: ScanOptions =
   for await (const photo of adapters.source.list({ limit: opts.limit, after: opts.after, before: opts.before })) {
     if (opts.signal?.aborted) break;
     try {
-      const analysis = await analyzePhoto(adapters, photo, opts.thumbnailSize ?? 256);
+      const analysis = await analyzePhoto(adapters, photo, opts);
       out.push(analysis);
     } catch {
       // Une photo illisible ne doit pas interrompre le parcours.
@@ -104,9 +146,20 @@ export async function scanPhotos(adapters: PipelineAdapters, opts: ScanOptions =
   return out;
 }
 
-export async function analyzePhoto(adapters: PipelineAdapters, photo: SourcePhoto, thumbnailSize = 256): Promise<PhotoAnalysis> {
-  const [rgba, faces, labels] = await Promise.all([
-    adapters.pixels.readThumbnail(photo, thumbnailSize),
+/**
+ * Bande de doute au sein de laquelle l'EXIF vaut la peine d'être lu : en
+ * dessous, l'image est manifestement une photo ; au-dessus, manifestement pas.
+ * Un appel natif par photo se paie cher sur une pellicule entière.
+ */
+const EXIF_DOUBT = { low: 0.2, high: 0.85 } as const;
+
+export async function analyzePhoto(
+  adapters: PipelineAdapters,
+  photo: SourcePhoto,
+  opts: Pick<ScanOptions, 'thumbnailSize' | 'locale'> = {},
+): Promise<PhotoAnalysis> {
+  const [rgba, faces, hits] = await Promise.all([
+    adapters.pixels.readThumbnail(photo, opts.thumbnailSize ?? 256),
     adapters.faces.detect(photo),
     adapters.labeler ? adapters.labeler.label(photo).catch(() => []) : Promise.resolve([]),
   ]);
@@ -117,12 +170,38 @@ export async function analyzePhoto(adapters: PipelineAdapters, photo: SourcePhot
       if (e) f.embedding = e;
     });
   }
+
+  const normalized = hits.map((h) => (typeof h === 'string' ? { text: h } : h));
+  const signals: AuthenticitySignals = {
+    photo,
+    labels: normalized.map((h) => h.text.trim().toLowerCase()),
+  };
+  if (adapters.device?.screen) signals.screen = adapters.device.screen;
+  let authenticity = assessAuthenticity(signals, rgba);
+  // L'EXIF ne tranche que les cas douteux : ni les photos évidentes, ni les
+  // captures déjà démasquées par leur nom ou par la photothèque.
+  if (
+    adapters.metadata &&
+    !declaredScreenshot(photo) &&
+    authenticity.artificiality > EXIF_DOUBT.low &&
+    authenticity.artificiality < EXIF_DOUBT.high
+  ) {
+    try {
+      signals.exif = await adapters.metadata.read(photo);
+      signals.exifRead = true;
+      authenticity = assessAuthenticity(signals, rgba);
+    } catch {
+      // Métadonnées illisibles : le verdict reste celui des autres indices.
+    }
+  }
+
   return {
     photo,
     faces,
     quality: computeQuality(rgba),
     hash: dHash(toGray(rgba)),
-    labels,
+    labels: usefulLabels(normalized, opts.locale),
+    authenticity,
   };
 }
 
@@ -138,6 +217,25 @@ export interface SelectionParams {
   allowScenery?: boolean;
   eventGapHours?: number;
   locale?: string;
+  /**
+   * Réglages fins de la sélection : quotas par événement, photos imposées ou
+   * refusées, seuils. Sans eux, l'assistant restait cantonné aux valeurs par
+   * défaut : deux photos par moment, quels que soient les moments.
+   */
+  selection?: Omit<SelectionOptions, 'targetCount' | 'eventGapHours'>;
+}
+
+export interface SelectionOutcome {
+  selected: SelectedPhoto[];
+  /** Photos écartées et motif, pour expliquer la sélection à l'utilisateur. */
+  rejected: RejectedPhoto[];
+  events: PhotoEvent[];
+  /** Événements candidats, y compris ceux dont aucune photo n'a été retenue. */
+  eventBuckets: TimeBucket[];
+  /** Moments candidats (rafales). */
+  momentBuckets: TimeBucket[];
+  byPhoto: Map<string, string[]>;
+  scores: PhotoScore[];
 }
 
 /** Étape 3 : scoring et sélection des meilleures photos, regroupées en événements. */
@@ -145,14 +243,7 @@ export function selectBestPhotos(
   analyses: PhotoAnalysis[],
   clusters: PersonCluster[],
   params: SelectionParams,
-): {
-  selected: SelectedPhoto[];
-  /** Photos écartées et motif, pour expliquer la sélection à l'utilisateur. */
-  rejected: RejectedPhoto[];
-  events: PhotoEvent[];
-  byPhoto: Map<string, string[]>;
-  scores: PhotoScore[];
-} {
+): SelectionOutcome {
   const byPhoto = peopleByPhoto(clusters);
   const scores = scorePhotos(analyses, {
     selectedPeople: params.selectedPeople,
@@ -160,9 +251,15 @@ export function selectBestPhotos(
     weights: params.weights,
     allowScenery: params.allowScenery,
   });
-  const { selected, rejected } = selectPhotos(analyses, scores, { targetCount: params.targetCount });
-  const events = groupIntoEvents(selected, params.eventGapHours, params.locale);
-  return { selected, rejected, events, byPhoto, scores };
+  const { selected, rejected, eventBuckets, momentBuckets } = selectPhotos(analyses, scores, {
+    ...params.selection,
+    targetCount: params.targetCount,
+    ...(params.eventGapHours === undefined ? {} : { eventGapHours: params.eventGapHours }),
+  });
+  // Les chapitres suivent les tranches que l'utilisateur a réglées, pas un
+  // nouveau découpage des seules photos retenues.
+  const events = eventsFromBuckets(eventBuckets, selected, params.locale);
+  return { selected, rejected, events, eventBuckets, momentBuckets, byPhoto, scores };
 }
 
 /** Issue d'une légende, pour le journal de diagnostic. */

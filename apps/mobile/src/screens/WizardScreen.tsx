@@ -3,6 +3,7 @@ import { Alert, ScrollView, StyleSheet, Text, TextInput, View } from 'react-nati
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   CAPTION_STYLES,
+  DEFAULT_MAX_ARTIFICIALITY,
   TemplateCaptionGenerator,
   assembleAlbum,
   detectPeople,
@@ -28,10 +29,10 @@ import { renderFaceThumbnail } from '../services/faceThumbnails';
 import { saveAlbum } from '../storage/albumStore';
 import { log } from '../diagnostics/log';
 import { colors, radius, spacing } from '../theme';
-import { Button, Chip, Header, ProgressBar } from '../components/ui';
+import { Button, Chip, Header, ProgressBar, Toggle } from '../components/ui';
 import { PersonCard } from '../components/PersonCard';
 import { STYLE_LABELS } from '../components/CaptionChooser';
-import { SelectionReview } from '../components/SelectionReview';
+import { SelectionReview, type PhotoDecision } from '../components/SelectionReview';
 
 type Step = 'intro' | 'scanning' | 'people' | 'review' | 'style' | 'generating';
 
@@ -57,6 +58,15 @@ const ENGINE_HINTS: Record<CaptionEngine, string> = {
 /** Nom attribué d'office : il ne doit pas gagner sur un nom saisi à la fusion. */
 const DEFAULT_NAME = /^Personne \d+$/;
 
+/** Ajoute ou retire une valeur d'un ensemble, sans le modifier sur place. */
+function toggleMembership(set: Set<string>, value: string, member: boolean): Set<string> {
+  if (set.has(value) === member) return set;
+  const next = new Set(set);
+  if (member) next.add(value);
+  else next.delete(value);
+  return next;
+}
+
 /** Assistant IA locale : parcours → personnes → style → génération. */
 export function WizardScreen() {
   const nav = useNavigation();
@@ -68,6 +78,17 @@ export function WizardScreen() {
   const [engine, setEngine] = useState<CaptionEngine>('template');
   const [style, setStyle] = useState<CaptionStyle>('family');
   const [targetCount, setTargetCount] = useState(24);
+  /** Écarter captures d'écran, images enregistrées et documents photographiés. */
+  const [realPhotosOnly, setRealPhotosOnly] = useState(true);
+  /**
+   * Nombre de photos réclamé pour un moment donné, par clé de tranche. Ces clés
+   * sont des dates : elles survivent au changement de personnes ou de cible, et
+   * les réglages avec elles.
+   */
+  const [quotas, setQuotas] = useState<Map<string, number>>(new Map());
+  /** Photos imposées et photos retirées à la main, par identifiant de galerie. */
+  const [keptPhotos, setKeptPhotos] = useState<Set<string>>(new Set());
+  const [droppedPhotos, setDroppedPhotos] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<{ label: string; value: number }>({ label: '', value: 0 });
   const [analyses, setAnalyses] = useState<PhotoAnalysis[]>([]);
   const [clusters, setClusters] = useState<PersonCluster[]>([]);
@@ -114,8 +135,41 @@ export function WizardScreen() {
   const selection = useMemo(() => {
     if (step !== 'review' && step !== 'style' && step !== 'generating') return null;
     if (analyses.length === 0) return null;
-    return selectBestPhotos(analyses, clusters, { selectedPeople: selected, targetCount, locale: LOCALE });
-  }, [analyses, clusters, selected, step, targetCount]);
+    return selectBestPhotos(analyses, clusters, {
+      selectedPeople: selected,
+      targetCount,
+      locale: LOCALE,
+      selection: {
+        // 1 laisse tout passer : le filtre se désactive, il ne s'assouplit pas.
+        maxArtificiality: realPhotosOnly ? DEFAULT_MAX_ARTIFICIALITY : 1,
+        eventQuotas: quotas,
+        keep: keptPhotos,
+        drop: droppedPhotos,
+      },
+    });
+  }, [analyses, clusters, droppedPhotos, keptPhotos, quotas, realPhotosOnly, selected, step, targetCount]);
+
+  /** Impose une photo, la retire, ou rend la main à l'IA pour celle-ci. */
+  const decidePhoto = useCallback((photoId: string, decision: PhotoDecision) => {
+    setKeptPhotos((current) => toggleMembership(current, photoId, decision === 'keep'));
+    setDroppedPhotos((current) => toggleMembership(current, photoId, decision === 'drop'));
+  }, []);
+
+  /** Fixe la part d'un moment, ou rend la main à l'IA pour celui-ci. */
+  const changeQuota = useCallback((bucketId: string, quota: number | undefined) => {
+    setQuotas((current) => {
+      const next = new Map(current);
+      if (quota === undefined) next.delete(bucketId);
+      else next.set(bucketId, quota);
+      return next;
+    });
+  }, []);
+
+  /** Images jugées non photographiques parmi tout ce qui a été parcouru. */
+  const notPhotoCount = useMemo(
+    () => analyses.filter((a) => (a.authenticity?.artificiality ?? 0) > DEFAULT_MAX_ARTIFICIALITY).length,
+    [analyses],
+  );
 
   /** Nombre de photos distinctes par personne, recalculé seulement si besoin. */
   const photoCountByCluster = useMemo(
@@ -140,7 +194,6 @@ export function WizardScreen() {
       abortRef.current = abort;
       setProgress({ label: 'Préparation des modèles…', value: 0 });
       const adapters = await createAdapters({
-        locale: LOCALE,
         captionEngine: engine,
         onFaceModelDownload: (p) => setProgress({ label: p < 1 ? 'Téléchargement du modèle de reconnaissance des visages (14 Mo)…' : 'Modèle de reconnaissance prêt.', value: p }),
         // Le modèle n'entre en jeu qu'après l'ouverture de l'album : ses
@@ -151,6 +204,7 @@ export function WizardScreen() {
       adaptersRef.current = adapters;
       const result = await scanPhotos(adapters, {
         limit: scanLimit,
+        locale: LOCALE,
         signal: abort.signal,
         onProgress: (p) => setProgress({ label: `Analyse des photos… ${p.done}${p.total ? ` / ${p.total}` : ''}`, value: p.total ? p.done / p.total : 0 }),
       });
@@ -362,6 +416,16 @@ export function WizardScreen() {
               <Chip key={n} label={`${n}`} selected={targetCount === n} onPress={() => setTargetCount(n)} />
             ))}
           </View>
+          <Toggle
+            label="Seulement de vraies photos"
+            hint={
+              notPhotoCount > 0
+                ? `${notPhotoCount} image${notPhotoCount > 1 ? 's' : ''} reconnue${notPhotoCount > 1 ? 's' : ''} comme capture d'écran, image enregistrée ou document.`
+                : "Aucune capture d'écran ni image enregistrée repérée dans ce parcours."
+            }
+            value={realPhotosOnly}
+            onChange={setRealPhotosOnly}
+          />
         </View>
         <View style={{ flex: 1 }}>
           {selection ? (
@@ -374,13 +438,23 @@ export function WizardScreen() {
               personNames={names}
               selectedPeople={selected}
               embedderName={adaptersRef.current?.embedder.name ?? 'inconnu'}
+              eventBuckets={selection.eventBuckets}
+              quotas={quotas}
+              onQuotaChange={changeQuota}
+              keep={keptPhotos}
+              drop={droppedPhotos}
+              onDecide={decidePhoto}
               locale={LOCALE}
             />
           ) : null}
         </View>
         <View style={styles.footer}>
           <Button
-            title="Continuer vers les légendes"
+            title={
+              selection && selection.selected.length !== targetCount
+                ? `Continuer avec ${selection.selected.length} photos`
+                : 'Continuer vers les légendes'
+            }
             onPress={() => setStep('style')}
             disabled={!selection || selection.selected.length === 0}
           />

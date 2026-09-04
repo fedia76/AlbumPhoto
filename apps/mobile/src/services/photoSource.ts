@@ -10,6 +10,9 @@ export function assetToSource(a: MediaLibrary.Asset): SourcePhoto {
     fileName: a.filename,
   };
   if (a.creationTime) src.takenAt = new Date(a.creationTime).toISOString();
+  // iOS marque lui-même ses captures d'écran : aucun indice n'est plus sûr, et
+  // il ne coûte rien — il arrive avec la liste des photos.
+  if (a.mediaSubtypes?.length) src.mediaSubtypes = a.mediaSubtypes;
   return src;
 }
 
