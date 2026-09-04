@@ -1,16 +1,18 @@
-import { usefulLabels, type ImageLabeler, type SourcePhoto } from '@albumphoto/core';
+import type { ImageLabeler, LabelHit, SourcePhoto } from '@albumphoto/core';
 import { resolveFileUri } from './fileUri';
 import { log } from '../diagnostics/log';
 
 type MlKitLabelModule = typeof import('@react-native-ml-kit/image-labeling');
 
-/** Étiquetage de contenu par ML Kit (sur l'appareil), traduit pour les légendes. */
+/**
+ * Étiquetage de contenu par ML Kit, sur l'appareil. Les étiquettes sont rendues
+ * telles quelles : le cœur en tire les mots-clés des légendes d'un côté, les
+ * indices de capture d'écran de l'autre.
+ */
 export class MlKitImageLabeler implements ImageLabeler {
   private warned = false;
 
-  constructor(private readonly locale: string) {}
-
-  async label(photo: SourcePhoto): Promise<string[]> {
+  async label(photo: SourcePhoto): Promise<LabelHit[]> {
     let api: MlKitLabelModule['default'];
     try {
       // Chargement paresseux : un module natif manquant ne doit pas être fatal.
@@ -27,7 +29,6 @@ export class MlKitImageLabeler implements ImageLabeler {
       return [];
     }
     const uri = await resolveFileUri(photo);
-    const labels = await api.label(uri);
-    return usefulLabels(labels, this.locale);
+    return api.label(uri);
   }
 }

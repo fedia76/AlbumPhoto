@@ -4,6 +4,7 @@ import { ManipulatorPixelReader } from './pixels';
 import { MlKitFaceDetector } from './faceDetector';
 import { createFaceEmbedder, type EmbedderWithThreshold } from './faceEmbedder';
 import { MlKitImageLabeler } from './labeler';
+import { MediaLibraryMetadataReader, deviceContext } from './photoMetadata';
 import { createCaptionGenerator, type CaptionActivity, type CaptionEngine } from './captioner';
 import { BundlePhotoImporter } from './importer';
 
@@ -13,7 +14,6 @@ export interface AppAdapters extends PipelineAdapters {
 
 /** Assemble les adaptateurs natifs pour le pipeline IA du cœur. */
 export async function createAdapters(opts: {
-  locale: string;
   captionEngine: CaptionEngine;
   /** Progression du téléchargement du LLM de légendes (0..1). */
   onModelDownload?: (p: number) => void;
@@ -29,7 +29,9 @@ export async function createAdapters(opts: {
     pixels,
     faces: new MlKitFaceDetector(),
     embedder,
-    labeler: new MlKitImageLabeler(opts.locale),
+    labeler: new MlKitImageLabeler(),
+    metadata: new MediaLibraryMetadataReader(),
+    device: deviceContext(),
     captions: createCaptionGenerator(opts.captionEngine, opts.onModelDownload, opts.onCaptionActivity),
     importer: new BundlePhotoImporter(),
   };

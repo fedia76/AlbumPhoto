@@ -276,6 +276,9 @@ const RejectedRow = React.memo(function RejectedRow({
         </View>
       </View>
       <Text style={styles.reasonDetail}>{rejectionDetail(reason, locale)}</Text>
+      {analysis.authenticity?.reasons.length ? (
+        <Text style={styles.reasonDetail}>{analysis.authenticity.reasons.join(' · ')}</Text>
+      ) : null}
       {weaknesses.length > 0 ? (
         <Text style={styles.weaknesses}>
           <Text style={styles.minus}>− </Text>

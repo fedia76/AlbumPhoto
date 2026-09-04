@@ -1,5 +1,6 @@
 export * from './types';
 export * from './quality';
+export * from './authenticity';
 export * from './phash';
 export * from './clustering';
 export * from './scoring';
