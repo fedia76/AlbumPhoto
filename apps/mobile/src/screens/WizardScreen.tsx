@@ -32,7 +32,7 @@ import { colors, radius, spacing } from '../theme';
 import { Button, Chip, Header, ProgressBar, Toggle } from '../components/ui';
 import { PersonCard } from '../components/PersonCard';
 import { STYLE_LABELS } from '../components/CaptionChooser';
-import { SelectionReview } from '../components/SelectionReview';
+import { SelectionReview, type PhotoDecision } from '../components/SelectionReview';
 
 type Step = 'intro' | 'scanning' | 'people' | 'review' | 'style' | 'generating';
 
@@ -58,6 +58,15 @@ const ENGINE_HINTS: Record<CaptionEngine, string> = {
 /** Nom attribué d'office : il ne doit pas gagner sur un nom saisi à la fusion. */
 const DEFAULT_NAME = /^Personne \d+$/;
 
+/** Ajoute ou retire une valeur d'un ensemble, sans le modifier sur place. */
+function toggleMembership(set: ReadonlySet<string>, value: string, member: boolean): Set<string> {
+  if (set.has(value) === member) return set as Set<string>;
+  const next = new Set(set);
+  if (member) next.add(value);
+  else next.delete(value);
+  return next;
+}
+
 /** Assistant IA locale : parcours → personnes → style → génération. */
 export function WizardScreen() {
   const nav = useNavigation();
@@ -77,6 +86,9 @@ export function WizardScreen() {
    * les réglages avec elles.
    */
   const [quotas, setQuotas] = useState<Map<string, number>>(new Map());
+  /** Photos imposées et photos retirées à la main, par identifiant de galerie. */
+  const [keptPhotos, setKeptPhotos] = useState<Set<string>>(new Set());
+  const [droppedPhotos, setDroppedPhotos] = useState<Set<string>>(new Set());
   const [progress, setProgress] = useState<{ label: string; value: number }>({ label: '', value: 0 });
   const [analyses, setAnalyses] = useState<PhotoAnalysis[]>([]);
   const [clusters, setClusters] = useState<PersonCluster[]>([]);
@@ -131,9 +143,17 @@ export function WizardScreen() {
         // 1 laisse tout passer : le filtre se désactive, il ne s'assouplit pas.
         maxArtificiality: realPhotosOnly ? DEFAULT_MAX_ARTIFICIALITY : 1,
         eventQuotas: quotas,
+        keep: keptPhotos,
+        drop: droppedPhotos,
       },
     });
-  }, [analyses, clusters, quotas, realPhotosOnly, selected, step, targetCount]);
+  }, [analyses, clusters, droppedPhotos, keptPhotos, quotas, realPhotosOnly, selected, step, targetCount]);
+
+  /** Impose une photo, la retire, ou rend la main à l'IA pour celle-ci. */
+  const decidePhoto = useCallback((photoId: string, decision: PhotoDecision) => {
+    setKeptPhotos((current) => toggleMembership(current, photoId, decision === 'keep'));
+    setDroppedPhotos((current) => toggleMembership(current, photoId, decision === 'drop'));
+  }, []);
 
   /** Fixe la part d'un moment, ou rend la main à l'IA pour celui-ci. */
   const changeQuota = useCallback((bucketId: string, quota: number | undefined) => {
@@ -421,6 +441,9 @@ export function WizardScreen() {
               eventBuckets={selection.eventBuckets}
               quotas={quotas}
               onQuotaChange={changeQuota}
+              keep={keptPhotos}
+              drop={droppedPhotos}
+              onDecide={decidePhoto}
               locale={LOCALE}
             />
           ) : null}

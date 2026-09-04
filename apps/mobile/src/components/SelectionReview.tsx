@@ -13,7 +13,7 @@ import {
   type TimeBucket,
 } from '@albumphoto/core';
 import { SourcePhotoThumb } from './SourcePhotoThumb';
-import { Chip, Stepper } from './ui';
+import { Button, Chip, Stepper } from './ui';
 import { colors, radius, spacing } from '../theme';
 
 export interface SelectionReviewProps {
@@ -36,10 +36,18 @@ export interface SelectionReviewProps {
   quotas: ReadonlyMap<string, number>;
   /** `undefined` rend la main à l'IA pour ce moment. */
   onQuotaChange: (bucketId: string, quota: number | undefined) => void;
+  /** Photos imposées à la main. */
+  keep: ReadonlySet<string>;
+  /** Photos retirées à la main. */
+  drop: ReadonlySet<string>;
+  onDecide: (photoId: string, decision: PhotoDecision) => void;
   locale?: string;
 }
 
 type Tab = 'selected' | 'rejected' | 'moments';
+
+/** Sort réservé à une photo : imposée, refusée, ou laissé à l'IA. */
+export type PhotoDecision = 'keep' | 'drop' | 'auto';
 
 const pct = (v: number): string => `${Math.round(v * 100)}`;
 const THUMB = 84;
@@ -61,6 +69,9 @@ export function SelectionReview({
   eventBuckets,
   quotas,
   onQuotaChange,
+  keep,
+  drop,
+  onDecide,
   locale = 'fr-FR',
 }: SelectionReviewProps) {
   const [tab, setTab] = useState<Tab>('selected');
@@ -94,6 +105,12 @@ export function SelectionReview({
     [selected, rejected],
   );
 
+  const decisionOf = useMemo(
+    () =>
+      (photoId: string): PhotoDecision => (keep.has(photoId) ? 'keep' : drop.has(photoId) ? 'drop' : 'auto'),
+    [drop, keep],
+  );
+
   const byReason = useMemo(() => {
     const counts = new Map<RejectedPhoto['reason'], number>();
     for (const r of rejected) counts.set(r.reason, (counts.get(r.reason) ?? 0) + 1);
@@ -112,8 +129,17 @@ export function SelectionReview({
       <Text style={styles.paragraph}>
         {withFaces} photo{withFaces > 1 ? 's' : ''} avec au moins un visage. Identification par «&nbsp;{embedderName}&nbsp;».
         Chaque photo reçoit une note sur 100 combinant technique (40 %), personnes (30 %), expression (15 %) et
-        composition (15 %). Les photos floues, les quasi-doublons et les excès d'un même moment sont ensuite écartés.
+        composition (15 %). L'expression vient du détecteur de visages — sourires et yeux ouverts ; la technique et la
+        composition sont mesurées sans modèle, sur la netteté, l'exposition et la place des visages dans le cadre. Sont
+        ensuite écartés ce qui n'est pas une vraie photo, le flou, les quasi-doublons et les excès d'un même moment.
       </Text>
+
+      {keep.size + drop.size > 0 ? (
+        <Text style={styles.paragraph}>
+          Vos choix : {keep.size} photo{keep.size > 1 ? 's' : ''} imposée{keep.size > 1 ? 's' : ''}, {drop.size}{' '}
+          retirée{drop.size > 1 ? 's' : ''}. Ils passent avant la note, et avant la part accordée à leur moment.
+        </Text>
+      ) : null}
 
       {byReason.length > 0 ? (
         <View style={styles.reasonSummary}>
@@ -174,6 +200,8 @@ export function SelectionReview({
             rank={index + 1}
             names={namesOn(item.analysis.photo.id)}
             event={eventOf.get(item.analysis.photo.id) ?? ''}
+            decision={decisionOf(item.analysis.photo.id)}
+            onDecide={onDecide}
             locale={locale}
           />
         )}
@@ -191,7 +219,15 @@ export function SelectionReview({
       windowSize={5}
       removeClippedSubviews
       ListEmptyComponent={<Text style={styles.empty}>Aucune photo écartée.</Text>}
-      renderItem={({ item }) => <RejectedRow item={item} names={namesOn(item.analysis.photo.id)} locale={locale} />}
+      renderItem={({ item }) => (
+        <RejectedRow
+          item={item}
+          names={namesOn(item.analysis.photo.id)}
+          decision={decisionOf(item.analysis.photo.id)}
+          onDecide={onDecide}
+          locale={locale}
+        />
+      )}
     />
   );
 }
@@ -288,17 +324,54 @@ function Criterion({ label, value }: { label: string; value: number }) {
   );
 }
 
+/**
+ * Barre de reprise en main. L'action proposée est toujours l'inverse de l'état
+ * courant ; « Laisser l'IA décider » n'apparaît que lorsqu'il y a une décision
+ * à défaire, pour ne pas encombrer le cas ordinaire.
+ */
+function DecisionBar({
+  photoId,
+  decision,
+  onDecide,
+  action,
+  title,
+}: {
+  photoId: string;
+  decision: PhotoDecision;
+  onDecide: (photoId: string, decision: PhotoDecision) => void;
+  action: PhotoDecision;
+  title: string;
+}) {
+  return (
+    <View style={styles.decisionBar}>
+      <Button title={title} variant="secondary" onPress={() => onDecide(photoId, action)} style={styles.decisionButton} />
+      {decision !== 'auto' ? (
+        <Button
+          title="Laisser l'IA décider"
+          variant="ghost"
+          onPress={() => onDecide(photoId, 'auto')}
+          style={styles.decisionButton}
+        />
+      ) : null}
+    </View>
+  );
+}
+
 const SelectedRow = React.memo(function SelectedRow({
   item,
   rank,
   names,
   event,
+  decision,
+  onDecide,
   locale,
 }: {
   item: SelectedPhoto;
   rank: number;
   names: string[];
   event: string;
+  decision: PhotoDecision;
+  onDecide: (photoId: string, decision: PhotoDecision) => void;
   locale: string;
 }) {
   const { analysis, score } = item;
@@ -313,6 +386,7 @@ const SelectedRow = React.memo(function SelectedRow({
             <View style={styles.scoreBadge}>
               <Text style={styles.scoreBadgeText}>{pct(score.score)}</Text>
             </View>
+            {decision === 'keep' ? <Text style={styles.decisionTag}>imposée</Text> : null}
           </View>
           <Text style={styles.date}>{formatDate(analysis.photo.takenAt, locale)}</Text>
           {event ? <Text style={styles.event}>{event}</Text> : null}
@@ -349,6 +423,14 @@ const SelectedRow = React.memo(function SelectedRow({
         {pct(analysis.quality.contrast)} · couleurs {pct(analysis.quality.colorfulness)} · luminance{' '}
         {Math.round(analysis.quality.meanLuma)} · laplacien {Math.round(analysis.quality.laplacianVariance)}
       </Text>
+
+      <DecisionBar
+        photoId={analysis.photo.id}
+        decision={decision}
+        onDecide={onDecide}
+        action="drop"
+        title="Retirer de l'album"
+      />
     </View>
   );
 });
@@ -356,10 +438,14 @@ const SelectedRow = React.memo(function SelectedRow({
 const RejectedRow = React.memo(function RejectedRow({
   item,
   names,
+  decision,
+  onDecide,
   locale,
 }: {
   item: RejectedPhoto;
   names: string[];
+  decision: PhotoDecision;
+  onDecide: (photoId: string, decision: PhotoDecision) => void;
   locale: string;
 }) {
   const { analysis, score, reason } = item;
@@ -396,6 +482,14 @@ const RejectedRow = React.memo(function RejectedRow({
         note {pct(score.score)} · technique {pct(score.technical)} · personnes {pct(score.people)} · expression{' '}
         {pct(score.expression)} · composition {pct(score.composition)} · netteté {pct(analysis.quality.sharpness)}
       </Text>
+
+      <DecisionBar
+        photoId={analysis.photo.id}
+        decision={decision}
+        onDecide={onDecide}
+        action="keep"
+        title="Ajouter à l'album"
+      />
     </View>
   );
 });
@@ -440,5 +534,8 @@ const styles = StyleSheet.create({
   momentRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
   momentTitle: { fontSize: 15, fontWeight: '600', color: colors.text },
   momentWarning: { fontSize: 12, color: '#a5563a', lineHeight: 17 },
+  decisionBar: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xs },
+  decisionButton: { flex: 1, paddingHorizontal: spacing.sm, minHeight: 38 },
+  decisionTag: { fontSize: 11, color: colors.primary, fontWeight: '700' },
   mono: { fontFamily: 'monospace', fontSize: 10, color: colors.muted },
 });
